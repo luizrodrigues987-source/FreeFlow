@@ -4,6 +4,15 @@ Private, local voice dictation for Windows, in the style of Wispr Flow.
 Hold a hotkey, talk, release: the text is transcribed on your own GPU and typed
 into whatever app has the cursor.
 
+## Download
+
+- **Full package (Windows 10/11, 64-bit, no install needed):**
+  https://github.com/luizrodrigues987-source/FreeFlow/releases/latest - grab `FreeFlow-<version>-win64.zip`
+  (about 1.2 GB), unzip anywhere, run `FreeFlow.exe`.
+- **Code-only update for an existing installation (about 70 KB):**
+  https://github.com/luizrodrigues987-source/FreeFlow/releases/latest/download/FreeFlow-update-latest.zip -
+  unzip and double-click `Update FreeFlow.bat`.
+
 ## What it does
 
 - **Hotkey** (default `Ctrl + Win`). Hold it and speak; release to insert the text. **Double-tap** it for
