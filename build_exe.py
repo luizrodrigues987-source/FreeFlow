@@ -40,6 +40,9 @@ Getting started
    model (about 2 GB) by itself and switches sentence structuring on.
 5. Settings > General > "Start FreeFlow when I sign in" keeps it running in the background all the time.
 
+In games such as League of Legends, FreeFlow opens the chat for you (Enter), inserts the text and leaves you to
+press Enter to send (Settings > Formatting > "Game chat").
+
 While you dictate, FreeFlow mutes your speakers (not headphones) and mutes your microphone for Discord,
 so people in your call do not hear you dictating. Both are restored the moment you stop.
 

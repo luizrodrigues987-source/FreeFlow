@@ -24,10 +24,12 @@ into whatever app has the cursor.
   without a focused field, a button), the text goes to the last window you dictated into, which is brought
   to the front; the indicator shows a "-> Claude" style hint. Windows that give no accessibility
   information (games, chat apps with the focus on a pane) always keep the text.
-- **Games**: pasting works wherever the game's chat accepts Ctrl+V. For games that only react to real
-  keystrokes, add the game's exe under Settings > Formatting > "Always type in"; FreeFlow then types with
-  hardware scan codes. A game running as administrator hides its keystrokes from FreeFlow unless FreeFlow
-  runs as administrator too; the indicator is not visible over exclusive-fullscreen games.
+- **Games**: for games listed under Settings > Formatting > "Game chat: open first" (League of Legends by
+  default) FreeFlow presses Enter to open the chat, pastes the text, and leaves you to press Enter to send;
+  list the game under "send after" as well to send automatically. For games that only react to real
+  keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
+  as administrator hides its keystrokes from FreeFlow unless FreeFlow runs as administrator too; the
+  indicator is not visible over exclusive-fullscreen games.
 - Settings are saved when you click Apply or close the window.
 - **Local transcription** with faster-whisper (`large-v3-turbo` on the RTX 3070, about 0.3 s per sentence).
   Optional cloud engines (OpenAI, Groq) if you ever want them.

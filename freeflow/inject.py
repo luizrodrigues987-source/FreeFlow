@@ -153,6 +153,11 @@ def _scan_events(vk: int, up: bool = False) -> INPUT:
     return _key_input(vk, scan, flags)
 
 
+def press_enter():
+    """Enter as a real key press (scan code), e.g. to open or send a game's chat box."""
+    _send([_scan_events(VK_RETURN), _scan_events(VK_RETURN, up=True)])
+
+
 def type_text(text: str, chunk_delay_ms: int = 0, scancodes: bool = True):
     """Type text as keystrokes. Newlines become Enter, tabs become Tab.
 

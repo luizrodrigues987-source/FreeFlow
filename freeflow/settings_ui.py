@@ -295,6 +295,12 @@ class SettingsWindow(tk.Toplevel):
         self._label(f, "Always type in", r); self._entry(f, "type_method_apps", r, width=40)
         self.v["type_method_apps"].set(", ".join(self.cfg.get("type_method_apps") or [])); r += 1
         ttk.Label(f, text="Program names, comma separated (for apps where Ctrl+V does not paste)", foreground="#888").grid(row=r, column=1, sticky="w"); r += 1
+        self._label(f, "Game chat: open first", r); self._entry(f, "chat_open_apps", r, width=40)
+        self.v["chat_open_apps"].set(", ".join(self.cfg.get("chat_open_apps") or [])); r += 1
+        self._label(f, "Game chat: send after", r); self._entry(f, "chat_send_apps", r, width=40)
+        self.v["chat_send_apps"].set(", ".join(self.cfg.get("chat_send_apps") or [])); r += 1
+        ttk.Label(f, text="Games where FreeFlow presses Enter to open the chat before inserting / to send the message afterwards",
+                  foreground="#888", wraplength=560).grid(row=r, column=1, sticky="w"); r += 1
 
         ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="we", pady=10); r += 1
         ttk.Label(f, text="AI clean-up: proper sentences, punctuation, paragraphs", font=("Segoe UI", 11, "bold")).grid(row=r, column=0, columnspan=2, sticky="w", pady=(0, 6)); r += 1
@@ -519,6 +525,8 @@ class SettingsWindow(tk.Toplevel):
         data["replacements"] = repl
         data["type_method_apps"] = [a.strip() for a in data.get("type_method_apps", "").split(",") if a.strip()]
         data["smart_target_text_apps"] = [a.strip() for a in data.get("smart_target_text_apps", "").split(",") if a.strip()]
+        data["chat_open_apps"] = [a.strip() for a in data.get("chat_open_apps", "").split(",") if a.strip()]
+        data["chat_send_apps"] = [a.strip() for a in data.get("chat_send_apps", "").split(",") if a.strip()]
         for key in ("openai_api_key", "groq_api_key", "anthropic_api_key", "local_model", "claude_model",
                     "openai_model", "groq_model", "openai_polish_model", "ollama_model", "ollama_url"):
             data[key] = str(data.get(key, "")).strip()
