@@ -27,7 +27,7 @@ from . import audioctl, autostart, focus, sounds, updater
 from .config import DATA_DIR, LAST_RECORDING_PATH, Config
 from .history import History
 from .hotkeys import HotkeyManager, pretty_combo
-from .inject import inject_text, press_enter, wait_modifiers_released
+from .inject import inject_game_chat, inject_text, press_enter, wait_modifiers_released
 from .llm import LocalLLM, PolishError, polish, resolve_mode, too_short_to_polish
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
 from .recorder import Recorder, save_wav
@@ -787,17 +787,27 @@ class App:
                         self.history.add(text, raw, job.duration, engine.describe(), job.app_exe, time.time() - t0)
                     self._fail(f"Couldn't switch to {label}; the text is on the clipboard (Ctrl+V)")
                     return
-        # game chat: open the chat box first (Enter) and optionally send afterwards
+        # game chat: open the chat box first (Enter), put the text in the way the game accepts it, and
+        # optionally send afterwards.  A chat message is one line: a line break would send it early.
         exe_l = (target.get("exe") or job.app_exe or "").lower()
         chat_open = {a.strip().lower() for a in (self.cfg.get("chat_open_apps") or []) if a.strip()}
         chat_send = {a.strip().lower() for a in (self.cfg.get("chat_send_apps") or []) if a.strip()}
-        if exe_l in chat_open:
+        if exe_l in chat_open or exe_l in chat_send:
+            final = " ".join(part.strip() for part in final.splitlines() if part.strip())
+            if self.cfg.get("append_space", True):
+                final += " "
             wait_modifiers_released()
-            press_enter()
-            time.sleep(0.15)
-        ok = inject_text(final, method, self.cfg.get("restore_clipboard", True),
-                         int(self.cfg.get("clipboard_restore_delay_ms", 500)),
-                         int(self.cfg.get("type_chunk_delay_ms", 0)))
+            if exe_l in chat_open:
+                press_enter()
+                time.sleep(max(0.05, float(self.cfg.get("chat_open_delay_ms", 200)) / 1000))
+            how = self.cfg.get("chat_insert", "type")
+            method = f"chat-{how}"
+            ok = inject_game_chat(final, how, self.cfg.get("restore_clipboard", True),
+                                  int(self.cfg.get("clipboard_restore_delay_ms", 500)))
+        else:
+            ok = inject_text(final, method, self.cfg.get("restore_clipboard", True),
+                             int(self.cfg.get("clipboard_restore_delay_ms", 500)),
+                             int(self.cfg.get("type_chunk_delay_ms", 0)))
         if ok and exe_l in chat_send:
             time.sleep(0.1)
             press_enter()

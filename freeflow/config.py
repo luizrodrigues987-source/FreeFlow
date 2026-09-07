@@ -62,6 +62,9 @@ DEFAULTS: dict = {
     "type_method_apps": [],          # exe names that should always use keystroke typing
     "chat_open_apps": ["League of Legends.exe"],   # games: press Enter to open the chat before inserting
     "chat_send_apps": [],            # games: press Enter after inserting to send the message
+    "chat_insert": "type",           # how the text gets into a game's chat: type (Unicode characters, never
+                                     # triggers abilities) | paste (slow Ctrl+V chord) | keys (real keystrokes)
+    "chat_open_delay_ms": 200,       # time for the chat box to open after the Enter
     "smart_target": True,            # insert into the window you started in; fall back to the last text box
     "smart_target_text_apps": [],    # extra exe names that always count as having a text box
     "append_space": True,

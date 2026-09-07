@@ -299,7 +299,10 @@ class SettingsWindow(tk.Toplevel):
         self.v["chat_open_apps"].set(", ".join(self.cfg.get("chat_open_apps") or [])); r += 1
         self._label(f, "Game chat: send after", r); self._entry(f, "chat_send_apps", r, width=40)
         self.v["chat_send_apps"].set(", ".join(self.cfg.get("chat_send_apps") or [])); r += 1
-        ttk.Label(f, text="Games where FreeFlow presses Enter to open the chat before inserting / to send the message afterwards",
+        self._label(f, "Game chat: insert by", r); self._combo(f, "chat_insert", ["type", "paste", "keys"], r, width=10); r += 1
+        ttk.Label(f, text="Games where FreeFlow presses Enter to open the chat before inserting / to send the message "
+                          "afterwards. Insert by: type = Unicode characters (safe, never triggers abilities), "
+                          "paste = slow Ctrl+V, keys = real keystrokes (only if the others fail).",
                   foreground="#888", wraplength=560).grid(row=r, column=1, sticky="w"); r += 1
 
         ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="we", pady=10); r += 1

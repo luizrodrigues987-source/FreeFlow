@@ -107,8 +107,19 @@ def send_dummy_key():
     press_vk(VK_DUMMY)
 
 
-def send_ctrl_v():
-    _send([_vk_events(VK_CONTROL), _vk_events(VK_V), _vk_events(VK_V, up=True), _vk_events(VK_CONTROL, up=True)])
+def send_ctrl_v(slow: bool = False):
+    """Ctrl+V.  slow=True spreads the chord over a few frames with hardware scan codes, for games that
+    read the keyboard once per frame and would otherwise see the V without the Ctrl."""
+    if not slow:
+        _send([_vk_events(VK_CONTROL), _vk_events(VK_V), _vk_events(VK_V, up=True), _vk_events(VK_CONTROL, up=True)])
+        return
+    _send([_scan_events(VK_LCONTROL)])
+    time.sleep(0.06)
+    _send([_scan_events(VK_V)])
+    time.sleep(0.06)
+    _send([_scan_events(VK_V, up=True)])
+    time.sleep(0.04)
+    _send([_scan_events(VK_LCONTROL, up=True)])
 
 
 def modifiers_down() -> bool:
@@ -128,7 +139,7 @@ def wait_modifiers_released(timeout: float = 3.0) -> bool:
     return True
 
 
-VK_LSHIFT, VK_CAPITAL = 0xA0, 0x14
+VK_LSHIFT, VK_LCONTROL, VK_CAPITAL = 0xA0, 0xA2, 0x14
 user32.VkKeyScanW.argtypes = [wt.WCHAR]
 user32.VkKeyScanW.restype = ctypes.c_short
 user32.GetKeyState.argtypes = [ctypes.c_int]
@@ -199,6 +210,39 @@ def type_text(text: str, chunk_delay_ms: int = 0, scancodes: bool = True):
     _send(events)
 
 
+def type_unicode(text: str, chunk: int = 16, chunk_delay_ms: int = 12):
+    """Type text as Unicode characters (VK_PACKET).  Such events reach text boxes only and never fire
+    key bindings, so a game whose chat did not open ignores them instead of casting abilities.  Games
+    read their input once per frame, so the text goes out in small chunks."""
+    events: list[INPUT] = []
+    for ch in text:
+        if ch == "\r":
+            continue
+        units = ch.encode("utf-16-le")
+        for i in range(0, len(units), 2):
+            code = units[i] | (units[i + 1] << 8)
+            events.append(_key_input(0, code, KEYEVENTF_UNICODE))
+            events.append(_key_input(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP))
+        if len(events) >= chunk * 2:
+            _send(events)
+            events = []
+            time.sleep(chunk_delay_ms / 1000.0)
+    _send(events)
+
+
+def inject_game_chat(text: str, how: str = "type", restore_clipboard: bool = True,
+                     restore_delay_ms: int = 500) -> bool:
+    """Put text into a game's chat box that is already open.
+    how: "type" = Unicode characters (safe, default), "paste" = slow Ctrl+V chord, "keys" = scan codes."""
+    if how == "paste":
+        return paste_text(text, restore_clipboard, restore_delay_ms, slow=True)
+    if how == "keys":
+        type_text(text, chunk_delay_ms=15, scancodes=True)
+        return True
+    type_unicode(text)
+    return True
+
+
 # --------------------------------------------------------------------------
 # Clipboard
 # --------------------------------------------------------------------------
@@ -261,7 +305,7 @@ def clipboard_set_text(text: str) -> bool:
         user32.CloseClipboard()
 
 
-def paste_text(text: str, restore: bool = True, restore_delay_ms: int = 500) -> bool:
+def paste_text(text: str, restore: bool = True, restore_delay_ms: int = 500, slow: bool = False) -> bool:
     """Put text on the clipboard, send Ctrl+V, then restore the previous clipboard text."""
     previous = clipboard_get_text() if restore else None
     if restore and previous is None and clipboard_has_non_text():
@@ -270,7 +314,7 @@ def paste_text(text: str, restore: bool = True, restore_delay_ms: int = 500) -> 
         log.error("Could not write to the clipboard")
         return False
     time.sleep(0.03)
-    send_ctrl_v()
+    send_ctrl_v(slow)
     if restore and previous is not None:
         def _restore():
             time.sleep(max(0.1, restore_delay_ms / 1000.0))

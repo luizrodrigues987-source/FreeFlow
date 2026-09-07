@@ -26,8 +26,11 @@ into whatever app has the cursor.
   to the front; the indicator shows a "-> Claude" style hint. Windows that give no accessibility
   information (games, chat apps with the focus on a pane) always keep the text.
 - **Games**: for games listed under Settings > Formatting > "Game chat: open first" (League of Legends by
-  default) FreeFlow presses Enter to open the chat, pastes the text, and leaves you to press Enter to send;
-  list the game under "send after" as well to send automatically. Games are never asked accessibility
+  default) FreeFlow presses Enter to open the chat (so start with the chat box closed), types the text as
+  Unicode characters, which reach text boxes only and can never trigger abilities, and leaves you to press
+  Enter to send; list the game under "send after" as well to send automatically. "Insert by" offers a slow
+  Ctrl+V chord or real keystrokes for games that ignore Unicode input. Chat messages are one line: line
+  breaks become spaces. Games are never asked accessibility
   questions (a League match once kept FreeFlow waiting 30 s for an answer), and any other window gets half
   a second to describe its focused control before the text simply stays where you are. For games that
   only react to real keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
