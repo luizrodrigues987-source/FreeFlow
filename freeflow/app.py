@@ -755,6 +755,9 @@ class App:
             return
         app_context = f"{job.app_exe} - {job.app_title}".strip(" -")
         mode = resolve_mode(self.cfg, self.local_llm)
+        if mode != "off" and job.app_exe.lower() in self._game_apps() and not self.cfg.get("polish_in_games", False):
+            # chat messages are short and casual; the small model has rewritten them ("you" became "I")
+            mode = "off"
         if mode != "off" and not too_short_to_polish(text):
             self.ui(self.overlay.show, "transcribing", "Polishing…")
             t1 = time.time()

@@ -110,7 +110,32 @@ def _tidy_output(text: str, out: str) -> str:
         if missing > 0.25:
             log.warning("Polish output lost %.0f%% of the content words; keeping the original text", missing * 100)
             return text
+    # the model must not change who is speaking ("you are being useless" once came back as "I am being useless")
+    before, after = _persons(text), _persons(out)
+    if before != after:
+        log.warning("Polish output changed the person (%s -> %s); keeping the original text",
+                    ",".join(sorted(before)) or "none", ",".join(sorted(after)) or "none")
+        return text
     return out
+
+
+_PERSONS = {
+    "first": {"i", "i'm", "i've", "i'll", "i'd", "me", "my", "mine", "myself", "we", "we're", "we've", "we'll",
+              "we'd", "us", "our", "ours", "ourselves"},
+    "second": {"you", "you're", "you've", "you'll", "you'd", "your", "yours", "yourself", "yourselves"},
+    "third": {"he", "she", "they", "him", "her", "them", "his", "hers", "their", "theirs", "he's", "she's",
+              "they're", "they've", "they'll", "he'd", "she'd", "they'd", "himself", "herself", "themselves"},
+}
+_PERSON_FILLERS = ("you know", "i mean", "you see")
+
+
+def _persons(s: str) -> set:
+    """Which grammatical persons (first / second / third) the text speaks in."""
+    low = " " + " ".join(re.findall(r"[a-z']+", s.lower())) + " "
+    for filler in _PERSON_FILLERS:          # dropping a "you know" is fine, it does not change the speaker
+        low = low.replace(" " + filler + " ", " ")
+    toks = set(low.split())
+    return {person for person, words in _PERSONS.items() if toks & words}
 
 
 _FILLER_WORDS = {"like", "yeah", "okay", "just", "really", "actually", "basically", "literally", "gonna", "kind", "sort"}

@@ -30,7 +30,8 @@ into whatever app has the cursor.
   Unicode characters, which reach text boxes only and can never trigger abilities, and leaves you to press
   Enter to send; list the game under "send after" as well to send automatically. "Insert by" offers a slow
   Ctrl+V chord or real keystrokes for games that ignore Unicode input. Chat messages are one line: line
-  breaks become spaces. Games are never asked accessibility
+  breaks become spaces. Game chat skips the AI clean-up (the small model once turned "you are being
+  useless" into "I am being useless"); the rule-based clean-up still runs. Games are never asked accessibility
   questions (a League match once kept FreeFlow waiting 30 s for an answer), and any other window gets half
   a second to describe its focused control before the text simply stays where you are. For games that
   only react to real keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
@@ -52,6 +53,8 @@ into whatever app has the cursor.
   Ollama (Qwen 2.5 3B by default, Gemma 3 4B also installed) turns run-on speech into punctuated sentences
   and paragraphs and drops repeated words and false starts, in well under a second on the GPU.
   On by default when Ollama is installed ("Auto"); Claude or OpenAI can be used instead with an API key.
+  Every result is checked before use: a rewrite that changes the length a lot, drops content words or
+  changes who is speaking (first, second or third person) is discarded and the plain transcript is used.
 - **Island indicator**: a small round-ended pill sits at the bottom centre of the screen all the time and
   expands with a short animation while you dictate (bars that swing with your voice thanks to automatic
   gain, then dots while transcribing, then a check mark; purple bars mean hands-free). Click it to start
