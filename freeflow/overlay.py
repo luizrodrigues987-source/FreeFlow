@@ -61,7 +61,55 @@ def dpi_scale() -> float:
         return 1.0
 
 
-def work_area() -> Optional[tuple[int, int, int, int]]:
+MONITOR_DEFAULTTONEAREST = 2
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+
+user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
+user32.MonitorFromWindow.restype = ctypes.c_void_p
+user32.MonitorFromPoint.argtypes = [wt.POINT, wt.DWORD]
+user32.MonitorFromPoint.restype = ctypes.c_void_p
+user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+user32.GetMonitorInfoW.restype = wt.BOOL
+user32.GetCursorPos.argtypes = [ctypes.POINTER(wt.POINT)]
+user32.GetCursorPos.restype = wt.BOOL
+user32.IsWindow.argtypes = [wt.HWND]
+user32.IsWindow.restype = wt.BOOL
+user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+DESKTOP_CLASSES = {"Progman", "WorkerW"}       # the desktop spans every monitor: use the mouse instead
+
+
+def monitor_of(hwnd: int = 0):
+    """The monitor showing this window; the one under the mouse when there is no (usable) window."""
+    mon = None
+    try:
+        if hwnd and user32.IsWindow(hwnd):
+            buf = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, buf, 64)
+            if buf.value not in DESKTOP_CLASSES:
+                mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if not mon:
+            pt = wt.POINT()
+            if user32.GetCursorPos(ctypes.byref(pt)):
+                mon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+    except Exception:
+        mon = None
+    return mon
+
+
+def work_area(hwnd: int = 0) -> Optional[tuple[int, int, int, int]]:
+    """Work area (screen minus taskbar) of the monitor to use for the indicator: the monitor of the
+    given window, else the monitor with the mouse, else the primary one."""
+    mon = monitor_of(hwnd)
+    if mon:
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if user32.GetMonitorInfoW(mon, ctypes.byref(mi)):
+            return mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom
     r = wt.RECT()
     if user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(r), 0):
         return r.left, r.top, r.right, r.bottom
@@ -110,6 +158,8 @@ class Overlay:
         self.s = dpi_scale()
         self.state = "hidden"
         self.message = ""
+        self.follow_hwnd = 0          # window whose monitor the indicator sits on (0 = mouse)
+        self._monitor = None
         self._hover = False
         self._job: Optional[str] = None
         self._hide_job: Optional[str] = None
@@ -180,8 +230,18 @@ class Overlay:
         except Exception:
             pass
 
+    def follow(self, hwnd: int):
+        """Show the indicator on the monitor of this window (0: the monitor with the mouse).  Called
+        while idle for the window in front and, during a dictation, for the window that gets the text."""
+        self.follow_hwnd = int(hwnd or 0)
+        mon = monitor_of(self.follow_hwnd)
+        if mon != self._monitor:
+            self._monitor = mon
+            self._place(max(2, int(round(self._cur_w))), max(2, int(round(self._cur_h))))
+
     def _place(self, w: int, h: int):
-        wa = work_area()
+        wa = work_area(self.follow_hwnd)
+        self._monitor = monitor_of(self.follow_hwnd)
         if wa:
             left, top, right, bottom = wa
         else:

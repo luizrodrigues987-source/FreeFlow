@@ -88,6 +88,7 @@ class App:
         )
         self.root: Optional[tk.Tk] = None
         self.overlay = None
+        self._followed = 0            # window whose monitor shows the indicator
         self.tray = None
         self.settings_win = None
 
@@ -509,6 +510,9 @@ class App:
         t_mute = time.monotonic()
         target = self._choose_target()
         self._target = target
+        if self.overlay and target.get("hwnd") != self._followed:
+            self._followed = int(target.get("hwnd") or 0)
+            self.ui(self.overlay.follow, self._followed)     # indicator on the monitor that gets the text
         t_target = time.monotonic()
         try:
             self.recorder.start(self.cfg.get("input_device") or None)
@@ -634,6 +638,10 @@ class App:
             fg = focus.user32.GetForegroundWindow()
             if fg and not self._own_window(fg):
                 self._last_foreign_fg = int(fg)
+                # the indicator lives on the monitor of the window in front (multi-monitor setups)
+                if self.state == "idle" and self.pending == 0 and int(fg) != self._followed and self.overlay:
+                    self._followed = int(fg)
+                    self.ui(self.overlay.follow, int(fg))
         except Exception:
             pass
 

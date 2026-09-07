@@ -67,7 +67,8 @@ into whatever app has the cursor.
   expands with a short animation while you dictate (bars that swing with your voice thanks to automatic
   gain, then dots while transcribing, then a check mark; purple bars mean hands-free). Click it to start
   or stop hands-free dictation, right-click for Settings. Settings > General can switch it to "only
-  while dictating".
+  while dictating". With several monitors it sits on the monitor of the window in front (the mouse's
+  monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text.
 - Tray icon, history, start-with-Windows, crash-safe unmuting.
 
 ## Running it
