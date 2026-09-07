@@ -22,8 +22,14 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 WH_KEYBOARD_LL = 13
 WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
 WM_QUIT = 0x0012
+WM_TIMER = 0x0113
 LLKHF_INJECTED = 0x10
 LLKHF_LOWER_IL_INJECTED = 0x02
+THREAD_PRIORITY_HIGHEST = 2
+# Windows removes a low-level hook without notice when it answers too slowly (limit about 300 ms); a game
+# keeping every core busy can cause that.  A late call is logged and the hook is re-installed while idle.
+HOOK_LAG_WARN_MS = 150
+REHOOK_EVERY_S = 120.0
 
 LRESULT = ctypes.c_ssize_t
 
@@ -56,6 +62,14 @@ user32.PostThreadMessageW.restype = wt.BOOL
 kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 kernel32.GetModuleHandleW.restype = wt.HMODULE
 kernel32.GetCurrentThreadId.restype = wt.DWORD
+kernel32.GetCurrentThread.restype = wt.HANDLE
+kernel32.SetThreadPriority.argtypes = [wt.HANDLE, ctypes.c_int]
+kernel32.SetThreadPriority.restype = wt.BOOL
+kernel32.GetTickCount.restype = wt.DWORD
+user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, ctypes.c_void_p]
+user32.SetTimer.restype = ctypes.c_size_t
+user32.KillTimer.argtypes = [wt.HWND, ctypes.c_size_t]
+user32.KillTimer.restype = wt.BOOL
 
 # --------------------------------------------------------------------------
 # Key names
@@ -151,16 +165,28 @@ def pretty_combo(text: str, gesture: str = "hold") -> str:
 # Low level hook
 # --------------------------------------------------------------------------
 class KeyboardHook:
-    """WH_KEYBOARD_LL hook on a dedicated thread. handler(vk, is_down, injected) -> suppress?"""
+    """WH_KEYBOARD_LL hook on a dedicated thread. handler(vk, is_down, injected, t_event) -> suppress?
 
-    def __init__(self, handler: Callable[[int, bool, bool], bool]):
+    The callback only stamps the event and hands it to the handler, which must return at once.  The
+    thread runs at high priority, and the hook is re-installed while idle every REHOOK_EVERY_S and as
+    soon as possible after a late call, because Windows drops slow hooks silently.
+    """
+
+    def __init__(self, handler: Callable[[int, bool, bool, float], bool]):
         self.handler = handler
         self._thread: Optional[threading.Thread] = None
         self._tid = 0
         self._hook = None
         self._proc = None
+        self._timer = 0
         self._ready = threading.Event()
         self.ok = False
+        self._last_event = 0.0       # monotonic time of the last key event seen
+        self._installed_at = 0.0
+        self._rehook_wanted = False
+        self._lag_logged = 0.0
+        self.rehooks = 0
+        self.late_calls = 0
 
     def start(self) -> bool:
         self._thread = threading.Thread(target=self._run, name="kbd-hook", daemon=True)
@@ -172,31 +198,80 @@ class KeyboardHook:
         if self._tid:
             user32.PostThreadMessageW(self._tid, WM_QUIT, 0, 0)
 
+    def _install(self) -> bool:
+        self._hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, kernel32.GetModuleHandleW(None), 0)
+        self._installed_at = time.monotonic()
+        return bool(self._hook)
+
     def _run(self):
         self._tid = kernel32.GetCurrentThreadId()
+        # answer within Windows' hook time-out even when a game keeps every core busy
+        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_HIGHEST)
         self._proc = HOOKPROC(self._callback)  # keep a reference alive!
-        self._hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, kernel32.GetModuleHandleW(None), 0)
-        if not self._hook:
+        if not self._install():
             log.error("SetWindowsHookEx failed: %s", ctypes.get_last_error())
             self._ready.set()
             return
         self.ok = True
         self._ready.set()
+        self._timer = user32.SetTimer(None, 0, 1000, None)
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == WM_TIMER and not msg.hWnd:
+                self._maintain()
+                continue
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
-        user32.UnhookWindowsHookEx(self._hook)
+        if self._timer:
+            user32.KillTimer(None, self._timer)
+        if self._hook:
+            user32.UnhookWindowsHookEx(self._hook)
         self._hook = None
         log.info("Keyboard hook removed")
+
+    def _maintain(self):
+        """Once a second on the hook thread: re-install the hook when due, but never mid-typing."""
+        now = time.monotonic()
+        if now - self._last_event < 1.5:
+            return
+        if self._rehook_wanted or now - self._installed_at > REHOOK_EVERY_S:
+            self.reinstall()
+
+    def reinstall(self) -> bool:
+        """Unhook and hook again (hook thread only)."""
+        if self._hook:
+            user32.UnhookWindowsHookEx(self._hook)
+            self._hook = None
+        if not self._install():
+            self._rehook_wanted = True      # try again at the next tick
+            log.error("Re-installing the keyboard hook failed: %s", ctypes.get_last_error())
+            return False
+        self.rehooks += 1
+        if self._rehook_wanted:
+            log.info("Keyboard hook re-installed after a late call")
+        else:
+            log.debug("Keyboard hook refreshed")
+        self._rehook_wanted = False
+        return True
 
     def _callback(self, nCode, wParam, lParam):
         if nCode >= 0:
             kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            now = time.monotonic()
+            self._last_event = now
+            lag = (kernel32.GetTickCount() - kb.time) & 0xFFFFFFFF
+            if lag > 60000:              # stamped in the future or a clock oddity: treat as on time
+                lag = 0
+            if lag > HOOK_LAG_WARN_MS:
+                self.late_calls += 1
+                self._rehook_wanted = True
+                if now - self._lag_logged > 10:
+                    self._lag_logged = now
+                    log.warning("Keyboard hook was called %d ms late (the PC is busy); it will be re-installed", lag)
             injected = bool(kb.flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED))
             down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
             try:
-                if self.handler(int(kb.vkCode), down, injected):
+                if self.handler(int(kb.vkCode), down, injected, now - lag / 1000.0):
                     return 1
             except Exception:
                 log.exception("hotkey handler failed")
@@ -217,7 +292,7 @@ class HotkeyManager:
     A press while the app is recording always activates (the app stops on it).
 
     Callbacks (all called on the hook thread, keep them fast):
-      on_activate(kind, t)   combo pressed; kind is "press" or "double_tap", t = time.monotonic()
+      on_activate(kind, t)   combo pressed; kind is "press" or "double_tap", t = time.monotonic() of the key event
       on_deactivate(t)       combo released (any key of it)
       on_cancel()            cancel key pressed while recording
       on_other_key(vk)       another key pressed while the combo is held
@@ -294,9 +369,10 @@ class HotkeyManager:
             self._capture_keys = set()
 
     # ------------------------------------------------------------------
-    def _on_key(self, vk: int, down: bool, injected: bool) -> bool:
+    def _on_key(self, vk: int, down: bool, injected: bool, t: float = 0.0) -> bool:
         if injected:
             return False
+        now = t or time.monotonic()      # the key event's own time, even if the hook ran late
         fire = None
         suppress = False
         dummy = False
@@ -322,7 +398,6 @@ class HotkeyManager:
                 fire = ("cancel",)
                 suppress = True
             else:
-                now = time.monotonic()
                 combo_down = all(any(v in self.pressed for v in group) for group in self.combo)
                 new_press = combo_down and not self._combo_was_down
                 released = self._combo_was_down and not combo_down

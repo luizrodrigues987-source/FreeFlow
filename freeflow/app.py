@@ -35,6 +35,8 @@ from .transcribe import EngineError, create_engine, engine_signature
 from .util import acquire_single_instance, foreground_window_info, message_box, setup_logging, window_info
 
 log = logging.getLogger(__name__)
+# a hotkey press older than this when it reaches the controller is not acted on (we were stuck)
+STALE_PRESS_S = 2.0
 
 
 @dataclass
@@ -139,6 +141,7 @@ class App:
 
         threading.Thread(target=self._controller_loop, name="controller", daemon=True).start()
         threading.Thread(target=self._worker_loop, name="worker", daemon=True).start()
+        focus.warm_up()
         self._load_engine()
         self._setup_local_llm()
         self.root.after(30, self._pump_ui)
@@ -428,6 +431,12 @@ class App:
                 if mode == "toggle" or self.handsfree or gesture in ("double_tap", "both"):
                     self._stop_recording()
                 return
+            age = time.monotonic() - t_press
+            if age > STALE_PRESS_S:
+                # the press happened while we were stuck (e.g. a window that never answered); recording
+                # now would only capture whatever the user has moved on to
+                log.warning("Ignoring a hotkey press from %.1f s ago (FreeFlow was busy)", age)
+                return
             if press_kind == "double_tap":
                 self._start_recording(handsfree=True, t_press=t_press)
             elif gesture == "both":
@@ -489,17 +498,25 @@ class App:
         # 1) Before anything else (chime, indicator, even opening our own mic): take the microphone away
         #    from Discord & co., so nobody in a call hears the chime or the first words.
         self._cancel_pending_unmute()
+        t0 = time.monotonic()
         mic_mode = self.cfg.get("mute_mic_mode", "list")
         if mic_mode in ("list", "all"):
             self.mic_muter.mute(mic_mode, list(self.cfg.get("mute_mic_apps") or []))
+        t_mute = time.monotonic()
         target = self._choose_target()
         self._target = target
+        t_target = time.monotonic()
         try:
             self.recorder.start(self.cfg.get("input_device") or None)
         except Exception as e:
             self._restore_mutes()
             self._fail(f"Microphone error: {e}")
             return
+        t_rec = time.monotonic()
+        if t_rec - t0 > 0.4:
+            log.warning("Slow start (%.0f ms): microphone mute %.0f ms, target check %.0f ms, microphone open %.0f ms",
+                        (t_rec - t0) * 1000, (t_mute - t0) * 1000, (t_target - t_mute) * 1000,
+                        (t_rec - t_target) * 1000)
         self.state = "recording"
         self.handsfree = handsfree
         self._provisional = provisional
@@ -616,6 +633,10 @@ class App:
         except Exception:
             pass
 
+    def _game_apps(self) -> set:
+        apps = list(self.cfg.get("chat_open_apps") or []) + list(self.cfg.get("chat_send_apps") or [])
+        return {a.strip().lower() for a in apps if a.strip()}
+
     def _choose_target(self) -> dict:
         """Which window gets the text: the one in front, unless it clearly has no text box and we
         know a better one (the window we last dictated into)."""
@@ -633,16 +654,19 @@ class App:
         target = {"hwnd": hwnd, "exe": exe, "title": title, "redirected": False, "editable": None}
         if not self.cfg.get("smart_target", True):
             return target
+        if (exe or "").lower() in self._game_apps():
+            # games get the text through their chat box; never ask them accessibility questions
+            log.debug("Smart target: %s is a game; keeping it", exe)
+            return target
         extra = {a.strip().lower() for a in (self.cfg.get("smart_target_text_apps") or []) if a.strip()}
         try:
-            editable = focus.focused_editable(exe, extra)
+            editable, info = focus.inspect_editable(exe, extra)
         except Exception as e:
             log.debug("focus check failed: %s", e)
-            editable = None
+            editable, info = None, {}
         target["editable"] = editable
         last = self._last_target
         if editable is False and last and last["hwnd"] != hwnd and focus.window_exists(last["hwnd"]):
-            info = focus.describe_focus()
             log.info("Smart target: %s has no text box focused (%s %r); sending the text to %s",
                      exe or "?", info.get("control_type", "?"), info.get("class", ""), last["exe"])
             target = dict(last, redirected=True, editable=True)

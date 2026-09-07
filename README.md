@@ -27,8 +27,10 @@ into whatever app has the cursor.
   information (games, chat apps with the focus on a pane) always keep the text.
 - **Games**: for games listed under Settings > Formatting > "Game chat: open first" (League of Legends by
   default) FreeFlow presses Enter to open the chat, pastes the text, and leaves you to press Enter to send;
-  list the game under "send after" as well to send automatically. For games that only react to real
-  keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
+  list the game under "send after" as well to send automatically. Games are never asked accessibility
+  questions (a League match once kept FreeFlow waiting 30 s for an answer), and any other window gets half
+  a second to describe its focused control before the text simply stays where you are. For games that
+  only react to real keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
   as administrator hides its keystrokes from FreeFlow unless FreeFlow runs as administrator too; the
   indicator is not visible over exclusive-fullscreen games.
 - Settings are saved when you click Apply or close the window.
@@ -123,3 +125,6 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 - The speaker mute only touches the *default* playback device, so virtual cables and voice changers
   keep working.
 - Everything runs locally unless you switch on a cloud engine or AI polish in Settings.
+- The keyboard hook runs on a high-priority thread and re-installs itself when Windows called it late
+  (a busy game can make Windows drop slow hooks without notice); such late calls are logged as warnings,
+  and so is any dictation start that took longer than 0.4 s, with a breakdown of where the time went.

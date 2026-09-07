@@ -1,10 +1,19 @@
-"""Where should the text go?  Focused-control inspection (UI Automation) and window activation."""
+"""Where should the text go?  Focused-control inspection (UI Automation) and window activation.
+
+UI Automation asks the window in front to describe its focused control.  A game (or any busy app)
+may never answer: with the default time-outs of 2 s + 20 s per call, one press of the hotkey in a
+League of Legends match froze FreeFlow for 30 s.  The inspection therefore runs on its own thread
+with short time-outs, and the caller waits at most INSPECT_TIMEOUT; no answer means "unknown", and
+the window in front simply keeps the text.
+"""
 from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
 import logging
 import os
+import queue
+import threading
 import time
 from typing import Optional
 
@@ -47,6 +56,15 @@ CONTROL_TYPE_NAMES = {50000: "Button", 50001: "Calendar", 50002: "CheckBox", 500
                       50024: "TreeItem", 50025: "Custom", 50026: "Group", 50027: "Thumb", 50028: "DataGrid",
                       50029: "DataItem", 50030: "Document", 50031: "SplitButton", 50032: "Window", 50033: "Pane",
                       50034: "Header", 50035: "HeaderItem", 50036: "Table", 50037: "TitleBar", 50038: "Separator"}
+_PROPERTIES = (UIA_ControlTypePropertyId, UIA_NamePropertyId, UIA_ClassNamePropertyId,
+               UIA_IsValuePatternAvailablePropertyId, UIA_IsTextPatternAvailablePropertyId,
+               UIA_IsTextEditPatternAvailablePropertyId, UIA_ValueIsReadOnlyPropertyId)
+
+# How long a window may take to answer UI Automation (milliseconds; Windows' defaults are 2000 / 20000)
+UIA_CONNECTION_TIMEOUT_MS = 400
+UIA_TRANSACTION_TIMEOUT_MS = 700
+# How long the app waits for the inspection before it goes on without an answer (seconds)
+INSPECT_TIMEOUT = 0.5
 
 BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe",
             "chromium.exe", "iexplore.exe", "zen.exe", "librewolf.exe"}
@@ -63,7 +81,10 @@ _uia_failed = False
 
 
 def _automation():
-    """Lazily create the IUIAutomation COM object (comtypes generates the wrapper module once)."""
+    """Lazily create the IUIAutomation COM object (comtypes generates the wrapper module once).
+
+    Only ever called on the inspector thread, which owns the object.
+    """
     global _uia, _uia_failed
     if _uia is not None or _uia_failed:
         return _uia
@@ -71,12 +92,23 @@ def _automation():
         import comtypes
         import comtypes.client
         try:
-            comtypes.CoInitialize()
+            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         except Exception:
-            pass
+            try:
+                comtypes.CoInitialize()
+            except Exception:
+                pass
         comtypes.client.GetModule("UIAutomationCore.dll")
         from comtypes.gen import UIAutomationClient as UIA  # noqa: N814
-        _uia = comtypes.client.CreateObject(UIA.CUIAutomation._reg_clsid_, interface=UIA.IUIAutomation)
+        try:
+            # CUIAutomation8 (Windows 8+) exposes the time-outs; a game that never answers must not stall us
+            uia = comtypes.client.CreateObject(UIA.CUIAutomation8._reg_clsid_, interface=UIA.IUIAutomation2)
+            uia.ConnectionTimeout = UIA_CONNECTION_TIMEOUT_MS
+            uia.TransactionTimeout = UIA_TRANSACTION_TIMEOUT_MS
+        except Exception as e:
+            log.debug("CUIAutomation8 unavailable (%s); using the plain CUIAutomation", e)
+            uia = comtypes.client.CreateObject(UIA.CUIAutomation._reg_clsid_, interface=UIA.IUIAutomation)
+        _uia = uia
     except Exception as e:
         log.warning("UI Automation unavailable (%s); smart targeting will be limited", e)
         _uia_failed = True
@@ -84,40 +116,123 @@ def _automation():
 
 
 def describe_focus() -> dict:
-    """Details about the control that currently has the keyboard focus (for logging / settings)."""
+    """Details about the control that currently has the keyboard focus.  Talks to the window in front
+    and may block for the UI Automation time-outs: call it through inspect_focus()."""
     uia = _automation()
     if uia is None:
         return {}
     try:
-        el = uia.GetFocusedElement()
-        if not el:
-            return {}
-        ctype = int(el.GetCurrentPropertyValue(UIA_ControlTypePropertyId) or 0)
+        try:
+            # one round trip for all properties instead of one per property
+            cache = uia.CreateCacheRequest()
+            for prop in _PROPERTIES:
+                cache.AddProperty(prop)
+            el = uia.GetFocusedElementBuildCache(cache)
+            if not el:
+                return {}
+            get = el.GetCachedPropertyValue
+            ctype = int(get(UIA_ControlTypePropertyId) or 0)
+        except Exception as e:
+            log.debug("cached focus query failed (%s); asking property by property", e)
+            el = uia.GetFocusedElement()
+            if not el:
+                return {}
+            get = el.GetCurrentPropertyValue
+            ctype = int(get(UIA_ControlTypePropertyId) or 0)
         return {
             "control_type": CONTROL_TYPE_NAMES.get(ctype, str(ctype)),
-            "name": str(el.GetCurrentPropertyValue(UIA_NamePropertyId) or "")[:60],
-            "class": str(el.GetCurrentPropertyValue(UIA_ClassNamePropertyId) or "")[:40],
-            "value_pattern": bool(el.GetCurrentPropertyValue(UIA_IsValuePatternAvailablePropertyId)),
-            "text_pattern": bool(el.GetCurrentPropertyValue(UIA_IsTextPatternAvailablePropertyId)),
-            "text_edit_pattern": bool(el.GetCurrentPropertyValue(UIA_IsTextEditPatternAvailablePropertyId)),
-            "read_only": bool(el.GetCurrentPropertyValue(UIA_ValueIsReadOnlyPropertyId)),
+            "name": str(get(UIA_NamePropertyId) or "")[:60],
+            "class": str(get(UIA_ClassNamePropertyId) or "")[:40],
+            "value_pattern": bool(get(UIA_IsValuePatternAvailablePropertyId)),
+            "text_pattern": bool(get(UIA_IsTextPatternAvailablePropertyId)),
+            "text_edit_pattern": bool(get(UIA_IsTextEditPatternAvailablePropertyId)),
+            "read_only": bool(get(UIA_ValueIsReadOnlyPropertyId)),
         }
     except Exception as e:
         log.debug("describe_focus failed: %s", e)
         return {}
 
 
-def focused_editable(exe: str = "", extra_text_apps: Optional[set] = None) -> Optional[bool]:
-    """Does the focused control accept typed text?  True / False, or None when unknown.
+class _Inspector:
+    """Runs UI Automation work on its own thread so that a window which never answers cannot
+    block the app.  One request at a time: while an old one is still stuck, new ones report 'busy'."""
 
-    Conservative: anything that might be an editor counts as editable, so text is only
-    redirected away from windows that clearly have no text box (a web page without a
-    focused field, a file list, the desktop, a video player, ...).
-    """
+    def __init__(self):
+        self._q: queue.Queue = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._busy = 0
+        self.timeouts = 0
+
+    def _ensure_thread(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._run, name="focus-inspect", daemon=True)
+            self._thread.start()
+
+    def _run(self):
+        while True:
+            fn, box = self._q.get()
+            try:
+                box["value"] = fn()
+            except Exception as e:
+                box["error"] = e
+            finally:
+                with self._lock:
+                    self._busy -= 1
+                box["done"].set()
+
+    def submit(self, fn):
+        """Run fn on the inspector thread without waiting for it."""
+        with self._lock:
+            self._busy += 1
+        self._ensure_thread()
+        self._q.put((fn, {"done": threading.Event()}))
+
+    def call(self, fn, timeout: float):
+        """Run fn on the inspector thread; (result, "ok") or (None, "busy" | "timeout")."""
+        with self._lock:
+            if self._busy:
+                return None, "busy"
+            self._busy += 1
+        self._ensure_thread()
+        box = {"done": threading.Event()}
+        self._q.put((fn, box))
+        if not box["done"].wait(timeout):
+            self.timeouts += 1
+            return None, "timeout"
+        if "error" in box:
+            raise box["error"]
+        return box.get("value"), "ok"
+
+
+_inspector = _Inspector()
+
+
+def warm_up():
+    """Create the UI Automation object in the background (the first use can take a second)."""
+    _inspector.submit(_automation)
+
+
+def inspect_focus(timeout: float = INSPECT_TIMEOUT) -> dict:
+    """describe_focus() with a deadline; {} when the window in front gives no answer in time."""
+    try:
+        info, status = _inspector.call(describe_focus, timeout)
+    except Exception as e:
+        log.debug("describe_focus failed: %s", e)
+        return {}
+    if status == "timeout":
+        log.info("The window in front did not describe its focused control within %.0f ms; keeping it",
+                 timeout * 1000)
+        return {}
+    if status == "busy":
+        log.info("Focus inspection still waiting for an earlier window; keeping the window in front")
+        return {}
+    return info or {}
+
+
+def classify_focus(info: dict, exe: str = "") -> Optional[bool]:
+    """Does the described control accept typed text?  True / False, or None when unknown."""
     exe_l = (exe or "").lower()
-    if exe_l in TEXT_APPS or (extra_text_apps and exe_l in extra_text_apps):
-        return True
-    info = describe_focus()
     if not info:
         return None
     ctype = info["control_type"]
@@ -136,6 +251,27 @@ def focused_editable(exe: str = "", extra_text_apps: Optional[set] = None) -> Op
         # The Windows shell is the exception: its desktop / file lists never take dictated text.
         return False if exe_l == "explorer.exe" else None
     return False   # buttons, lists, images, links, menus, tabs, static text, ...
+
+
+def inspect_editable(exe: str = "", extra_text_apps: Optional[set] = None,
+                     timeout: float = INSPECT_TIMEOUT) -> tuple[Optional[bool], dict]:
+    """(editable, focus details) for the window in front.  editable is True / False, or None when
+    unknown - including when the window did not answer in time.
+
+    Conservative: anything that might be an editor counts as editable, so text is only
+    redirected away from windows that clearly have no text box (a web page without a
+    focused field, a file list, the desktop, a video player, ...).
+    """
+    exe_l = (exe or "").lower()
+    if exe_l in TEXT_APPS or (extra_text_apps and exe_l in extra_text_apps):
+        return True, {}
+    info = inspect_focus(timeout)
+    return classify_focus(info, exe_l), info
+
+
+def focused_editable(exe: str = "", extra_text_apps: Optional[set] = None) -> Optional[bool]:
+    """Does the focused control accept typed text?  True / False, or None when unknown."""
+    return inspect_editable(exe, extra_text_apps)[0]
 
 
 def window_exists(hwnd: int) -> bool:
