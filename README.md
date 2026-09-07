@@ -9,9 +9,10 @@ into whatever app has the cursor.
 - **Full package (Windows 10/11, 64-bit, no install needed):**
   https://github.com/luizrodrigues987-source/FreeFlow/releases/latest - grab `FreeFlow-<version>-win64.zip`
   (about 1.2 GB), unzip anywhere, run `FreeFlow.exe`.
-- **Code-only update for an existing installation (about 70 KB):**
-  https://github.com/luizrodrigues987-source/FreeFlow/releases/latest/download/FreeFlow-update-latest.zip -
-  unzip and double-click `Update FreeFlow.bat`.
+- **Already have FreeFlow?** It updates itself (tray > "Check for updates", `Update FreeFlow.bat` in its
+  folder, or automatically at start-up). Very early packages without the self-updater: download
+  https://github.com/luizrodrigues987-source/FreeFlow/releases/latest/download/Upgrade-FreeFlow.bat into the
+  FreeFlow folder and double-click it; it fetches the current package (1.2 GB) and swaps it in.
 
 ## What it does
 
@@ -82,6 +83,10 @@ it in `%APPDATA%/FreeFlow/update` and restarts. Friends can also double-click `U
 their FreeFlow folder, use the tray menu's "Check for updates", or the button in Settings > About
 (where the automatic check can be switched off). A broken update is set aside automatically and the
 built-in code runs.
+
+`Upgrade-FreeFlow.bat` (a 5 KB batch file, also a release asset) upgrades *any* installation, including
+the first packages that cannot update themselves: it finds the install (folder, running process or the
+start-up entry), downloads the latest full package from GitHub, mirrors it into place and restarts.
 
 To publish an update: run `build_update.bat`, then upload the zip to the release twice (its revisioned
 name and `FreeFlow-update-latest.zip`), e.g.

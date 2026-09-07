@@ -110,6 +110,9 @@ def build(cpu_only: bool = False):
         f.write("@echo off\r\n"
                 "rem Downloads the latest FreeFlow code update from GitHub, installs it and restarts FreeFlow.\r\n"
                 "start \"\" \"%~dp0FreeFlow.exe\" --update\r\n")
+    upgrader = os.path.join(ROOT, "Upgrade-FreeFlow.bat")
+    if os.path.exists(upgrader):
+        shutil.copy2(upgrader, os.path.join(DIST, "Upgrade-FreeFlow.bat"))   # full re-download upgrade, any build
     src = os.path.join(DIST, "source")
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(os.path.join(src, "freeflow"))
