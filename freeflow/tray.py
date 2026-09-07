@@ -56,6 +56,7 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings…", self._settings, default=True),
             pystray.MenuItem("History…", self._history),
+            pystray.MenuItem("Check for updates…", self._check_updates),
             pystray.MenuItem("Open data folder", self._open_folder),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit FreeFlow", self._quit),
@@ -76,6 +77,9 @@ class Tray:
 
     def _open_folder(self, icon, item):
         self.app.open_data_folder()
+
+    def _check_updates(self, icon, item):
+        self.app.check_for_updates(auto=False)
 
     def _quit(self, icon, item):
         self.app.quit()

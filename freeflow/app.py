@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 
 from . import APP_NAME, APP_VERSION
-from . import audioctl, autostart, focus, sounds
+from . import audioctl, autostart, focus, sounds, updater
 from .config import DATA_DIR, LAST_RECORDING_PATH, Config
 from .history import History
 from .hotkeys import HotkeyManager, pretty_combo
@@ -74,6 +74,8 @@ class App:
         self._provisional = False      # recording started on a press that may still turn out to be a tap
         self._press_t = 0.0            # time.monotonic() of the key press that started the recording
         self._unmute_timer: Optional[threading.Timer] = None
+        self.update_status = ""
+        self._just_updated = 0
         self.hotkeys = HotkeyManager(
             on_activate=lambda kind, t: self._ctrl_q.put(("activate", kind, t)),
             on_deactivate=lambda t: self._ctrl_q.put(("deactivate", t)),
@@ -150,6 +152,11 @@ class App:
         sounds.set_volume(self.cfg.get("sound_volume", 0.22))
         self.root.after(1500, lambda: self.tray.notify(self.usage_hint(), "FreeFlow is running"))
         self.root.after(4000, self._warn_about_wispr_flow)
+        if getattr(self, "_just_updated", 0):
+            self.root.after(2500, lambda: self.tray.notify(
+                f"FreeFlow was updated to revision {self._just_updated}.", "FreeFlow update"))
+        if self.cfg.get("auto_update", True) and updater.is_frozen():
+            self.root.after(20000, lambda: self.check_for_updates(auto=True))
         try:
             self.root.mainloop()
         finally:
@@ -320,6 +327,39 @@ class App:
     def open_data_folder(self):
         os.makedirs(DATA_DIR, exist_ok=True)
         subprocess.Popen(["explorer", DATA_DIR])
+
+    # ------------------------------------------------------------------
+    # updates
+    # ------------------------------------------------------------------
+    def check_for_updates(self, auto: bool = False):
+        """Download the latest code update from GitHub; stage it and restart if it is newer.
+        Runs in a background thread; results go to the tray (and the settings window if open)."""
+        if getattr(self, "_update_thread", None) and self._update_thread.is_alive():
+            return
+
+        def work():
+            res = updater.check_and_apply(self.cfg.get("update_url"), self.cfg.get("update_page"))
+            log.info("Update check (%s): %s - %s", "auto" if auto else "manual", res.status, res.message)
+            self.update_status = res.message
+            if self.settings_win is not None:
+                self.ui(self.settings_win.refresh_update_status)
+            if res.status == "updated":
+                if self.state == "recording":
+                    self.ui(self.tray.notify, f"{res.message} once you finish dictating.", "FreeFlow update")
+                    for _ in range(600):
+                        time.sleep(1)
+                        if self.state != "recording":
+                            break
+                self.ui(self.tray.notify, "Installing the update and restarting FreeFlow…", "FreeFlow update")
+                time.sleep(1.5)
+                updater.relaunch(["--restart"])
+            elif res.status == "full_package":
+                self.ui(self.tray.notify, res.message, "FreeFlow update")
+            elif not auto:
+                self.ui(self.tray.notify, res.message, "FreeFlow update")
+        self.update_status = "Checking for updates…"
+        self._update_thread = threading.Thread(target=work, name="updater", daemon=True)
+        self._update_thread.start()
 
     # ------------------------------------------------------------------
     # engine
@@ -944,9 +984,30 @@ def apply_cli_settings(args: list) -> bool:
 
 
 def main(argv: Optional[list] = None):
-    """Command line:  --quit | --restart | --autostart on|off | --set key=value  (no arguments = run normally)."""
+    """Command line:  --quit | --restart | --update | --autostart on|off | --set key=value
+    (no arguments = run normally)."""
     args = list(sys.argv[1:] if argv is None else argv)
     only_settings = False
+    just_updated = 0
+    if "--update" in args:
+        # "Update FreeFlow.bat": fetch the latest code, then (re)start with it
+        setup_logging()
+        quit_running_instance()
+        cfg = Config()
+        res = updater.check_and_apply(cfg.get("update_url"), cfg.get("update_page"))
+        log.info("Update (--update): %s - %s", res.status, res.message)
+        if res.status == "updated":
+            updater.relaunch(["--updated", str(res.revision)])   # a fresh process picks up the staged code
+            return
+        if res.status in ("full_package", "error"):
+            message_box(res.message, "FreeFlow update", 0x30 if res.status == "error" else 0x40)
+        args = [a for a in args if a != "--update"]
+    if "--updated" in args:
+        i = args.index("--updated")
+        try:
+            just_updated = int(args[i + 1])
+        except (IndexError, ValueError):
+            just_updated = 1
     if apply_cli_settings(args):
         only_settings = True
     if "--autostart" in args:
@@ -962,7 +1023,9 @@ def main(argv: Optional[list] = None):
         only_settings = False
     if only_settings:
         return
-    App().run()
+    app = App()
+    app._just_updated = just_updated
+    app.run()
 
 
 if __name__ == "__main__":

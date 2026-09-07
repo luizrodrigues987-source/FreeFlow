@@ -92,6 +92,10 @@ DEFAULTS: dict = {
     "history_max": 1000,
     "autostart": False,
     "first_run_done": False,
+    # --- Updates -----------------------------------------------------------
+    "auto_update": True,             # look for a newer code update on GitHub when FreeFlow starts
+    "update_url": "https://github.com/luizrodrigues987-source/FreeFlow/releases/latest/download/FreeFlow-update-latest.zip",
+    "update_page": "https://github.com/luizrodrigues987-source/FreeFlow/releases/latest",
 }
 
 

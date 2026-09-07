@@ -366,6 +366,15 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(box, text="Open data folder", command=self.app.open_data_folder).pack(side="left", padx=6)
         ttk.Button(box, text="Create desktop shortcut", command=self._shortcut).pack(side="left")
         r += 1
+        ttk.Label(f, text="Updates", font=("Segoe UI", 11, "bold")).grid(row=r, column=0, sticky="w", pady=(8, 4)); r += 1
+        from . import CODE_REVISION
+        ttk.Label(f, text=f"Installed code revision: {CODE_REVISION}").grid(row=r, column=0, sticky="w"); r += 1
+        ubox = ttk.Frame(f); ubox.grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Button(ubox, text="Check for updates now", command=lambda: self.app.check_for_updates(auto=False)).pack(side="left")
+        ttk.Checkbutton(ubox, text="Check for updates when FreeFlow starts", variable=self._var("auto_update", bool)).pack(side="left", padx=12)
+        r += 1
+        self.update_label = ttk.Label(f, text=getattr(self.app, "update_status", "") or "", foreground="#888", wraplength=640, justify="left")
+        self.update_label.grid(row=r, column=0, sticky="w"); r += 1
         tips = ("Tips\n"
                 "• Hold the hotkey and talk; release to insert the text.\n"
                 "• Tap the hotkey briefly for hands-free mode; tap again (or press Esc) to finish.\n"
@@ -442,6 +451,12 @@ class SettingsWindow(tk.Toplevel):
             say(f"Ollama {ollama_version(url)} is running. Model {model} is ready. Installed models: {', '.join(installed) or '-'}")
             self.app.ui(lambda: self.ollama_combo.configure(values=sorted(set(LLM_MODELS) | set(installed))))
         threading.Thread(target=work, name="ollama-check", daemon=True).start()
+
+    def refresh_update_status(self):
+        try:
+            self.update_label.configure(text=getattr(self.app, "update_status", "") or "")
+        except (tk.TclError, AttributeError):
+            pass
 
     def refresh_engine_status(self):
         eng = self.app.engine

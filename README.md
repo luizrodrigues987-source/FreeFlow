@@ -76,13 +76,19 @@ if they want sentence structuring.
 
 ## Updating friends' installations
 
-`build_update.py` (venv) makes `dist/FreeFlow-update-r<revision>.zip`, a code-only update of about 100 KB
-(also copied to the Desktop) that is small enough to send over Discord. The recipient unzips it and
-double-clicks `Update FreeFlow.bat`: the code goes to `%APPDATA%/FreeFlow/update` and FreeFlow restarts.
-`FreeFlow.exe` uses that folder whenever its revision is newer than the bundled code, and falls back to
-the bundled code if an update fails to load. Updates only carry FreeFlow's own code; when a new
-third-party dependency is added, rebuild and resend the full package. Packages built before this
-mechanism existed do not look for updates.
+The packaged FreeFlow updates itself from the GitHub release: at start-up it downloads the small
+`FreeFlow-update-latest.zip` (about 70 KB), and when that code is newer than what is installed it stages
+it in `%APPDATA%/FreeFlow/update` and restarts. Friends can also double-click `Update FreeFlow.bat` in
+their FreeFlow folder, use the tray menu's "Check for updates", or the button in Settings > About
+(where the automatic check can be switched off). A broken update is set aside automatically and the
+built-in code runs.
+
+To publish an update: run `build_update.bat`, then upload the zip to the release twice (its revisioned
+name and `FreeFlow-update-latest.zip`), e.g.
+`gh release upload v1.1.0 dist\FreeFlow-update-r<rev>.zip dist\FreeFlow-update-latest.zip --clobber`.
+Updates only carry FreeFlow's own code: a new third-party dependency or a new version number needs a
+full package (`build_exe.bat`, then `gh release create v<ver> ...`); the app tells users when that is
+the case and links to the release page.
 
 ## Setup on another PC
 

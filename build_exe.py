@@ -56,8 +56,9 @@ Everything runs on your own PC. Nothing is sent anywhere unless you deliberately
 (OpenAI / Groq / Claude) in Settings.
 
 Updates
-Small updates come as a zip of about 100 KB ("FreeFlow-update-r....zip"). Unzip it and double-click
-"Update FreeFlow.bat": the new code is copied to %APPDATA%\\FreeFlow\\update and FreeFlow restarts.
+FreeFlow checks GitHub for a newer version each time it starts and installs it by itself (switch this off
+in Settings > About). You can also double-click "Update FreeFlow.bat" in this folder, or use the tray
+icon's "Check for updates". Updates are small (about 70 KB); a new major version is announced with a link.
 
 Notes
 - Windows SmartScreen or an antivirus may warn about an unsigned app the first time; choose "Run anyway".
@@ -105,6 +106,10 @@ def build(cpu_only: bool = False):
     # extras shipped next to the exe
     with open(os.path.join(DIST, "README-FreeFlow.txt"), "w", encoding="utf-8") as f:
         f.write(FRIEND_README)
+    with open(os.path.join(DIST, "Update FreeFlow.bat"), "w", encoding="ascii", newline="\r\n") as f:
+        f.write("@echo off\r\n"
+                "rem Downloads the latest FreeFlow code update from GitHub, installs it and restarts FreeFlow.\r\n"
+                "start \"\" \"%~dp0FreeFlow.exe\" --update\r\n")
     src = os.path.join(DIST, "source")
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(os.path.join(src, "freeflow"))
