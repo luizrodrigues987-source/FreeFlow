@@ -69,6 +69,13 @@ into whatever app has the cursor.
   or stop hands-free dictation, right-click for Settings. Settings > General can switch it to "only
   while dictating". With several monitors it sits on the monitor of the window in front (the mouse's
   monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text.
+- **Learns how you speak**: corrections become rules. Right after a bad dictation, hold the hotkey and
+  say "correction" followed by the right words ("correction: start localhost"): the wrong text is taken
+  back (undo, if you have not typed since), the fix is inserted, and "loco host -> localhost" is learned.
+  Dictating the same sentence again also teaches it (a fix seen twice becomes a rule), and any entry under
+  Settings > History can be corrected by hand. Rules are applied to every later transcript, and the learned
+  words are whispered to the speech model so it hears them right in the first place. Settings > Learning
+  lists the rules (heard as / should be / how / used) and lets you remove or add them.
 - Tray icon, history, start-with-Windows, crash-safe unmuting.
 
 ## Running it
@@ -128,10 +135,11 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/transcribe.py` | faster-whisper / OpenAI / Groq engines |
 | `freeflow/postprocess.py` | filler removal, voice commands, replacements |
 | `freeflow/gamevocab.py` | League of Legends vocabulary for game chat (Whisper prompt, corrections, champion names) |
+| `freeflow/learning.py` | learned corrections: "correction ..." command, re-dictations, History edits -> rules + Whisper vocabulary |
 | `freeflow/llm.py` | optional Claude / OpenAI polish |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |
-| `%APPDATA%\FreeFlow\` | `config.json`, `history.jsonl`, `freeflow.log` |
+| `%APPDATA%\FreeFlow\` | `config.json`, `history.jsonl`, `learned.json`, `freeflow.log` |
 
 ## Notes
 

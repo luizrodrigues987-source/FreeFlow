@@ -307,6 +307,7 @@ class HotkeyManager:
         self.is_recording = is_recording
         self._lock = threading.Lock()
         self.pressed: set[int] = set()
+        self.presses = 0              # real (not injected) key presses outside the hotkey, ever
         self.combo: list[frozenset[int]] = []
         self.combo_vks: set[int] = set()
         self.cancel_vks: set[int] = set()
@@ -378,6 +379,8 @@ class HotkeyManager:
         dummy = False
         with self._lock:
             if down:
+                if vk not in self.pressed and vk not in self.combo_vks and vk not in MODIFIER_VKS:
+                    self.presses += 1     # lets the app know whether the user typed since its last insertion
                 self.pressed.add(vk)
             else:
                 self.pressed.discard(vk)

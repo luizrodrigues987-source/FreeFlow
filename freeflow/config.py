@@ -68,6 +68,9 @@ DEFAULTS: dict = {
     "polish_in_games": False,        # AI clean-up for game chat messages (off: rule-based clean-up only)
     "game_vocab": True,              # League of Legends jargon / champion names for game chat (freeflow/gamevocab.py)
     "game_vocabulary": [],           # the user's own extra words for game chat (teammates' names, more champions)
+    "learning": True,                # learn corrections ("correction ..." command, re-dictations, History edits)
+    "learn_from_redictation": True,  # ... also automatically when the same sentence is dictated again
+    "correction_replaces": True,     # a spoken correction undoes the text just inserted and inserts the fix
     "smart_target": True,            # insert into the window you started in; fall back to the last text box
     "smart_target_text_apps": [],    # extra exe names that always count as having a text box
     "append_space": True,

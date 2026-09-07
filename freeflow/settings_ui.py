@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from . import APP_VERSION, audioctl, autostart
 from .config import DATA_DIR, LOG_PATH
@@ -59,7 +59,8 @@ class SettingsWindow(tk.Toplevel):
         self.tabs: dict[str, ttk.Frame] = {}
         for name, builder in [("General", self._build_general), ("Audio & Muting", self._build_audio),
                               ("Transcription", self._build_transcription), ("Formatting", self._build_formatting),
-                              ("History", self._build_history), ("About", self._build_about)]:
+                              ("Learning", self._build_learning), ("History", self._build_history),
+                              ("About", self._build_about)]:
             frame = ttk.Frame(self.nb, padding=12)
             self.nb.add(frame, text=name)
             self.tabs[name] = frame
@@ -114,6 +115,8 @@ class SettingsWindow(tk.Toplevel):
                 self.nb.select(i)
                 if n == "History":
                     self.refresh_history()
+                elif n == "Learning":
+                    self.refresh_rules()
 
     def close(self):
         """Save (if valid) and close. Invalid input keeps the window open with an explanation."""
@@ -354,9 +357,125 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(box, text="Copy", command=self._copy_history).pack(side="left")
         ttk.Button(box, text="Copy raw transcript", command=lambda: self._copy_history(raw=True)).pack(side="left", padx=6)
         ttk.Button(box, text="Refresh", command=self.refresh_history).pack(side="left")
+        ttk.Button(box, text="Correct…", command=self._correct_history).pack(side="left", padx=6)
         ttk.Button(box, text="Delete all", command=self._clear_history).pack(side="right")
         self._history_entries: list[dict] = []
         self.refresh_history()
+
+    def _build_learning(self, f):
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(6, weight=1)
+        r = 0
+        ttk.Label(f, text="FreeFlow learns the way you say things", font=("Segoe UI", 11, "bold")).grid(row=r, column=0, columnspan=2, sticky="w"); r += 1
+        for line in ('• Right after a bad dictation, hold the hotkey and say "correction" followed by the right words, '
+                     'e.g. "correction: start localhost". The wrong text is taken back and the fix is inserted.',
+                     '• Or simply dictate the sentence again: a fix that shows up twice is learned by itself.',
+                     '• Or select an entry under History and click "Correct…", or add a rule below.',
+                     'Every rule is applied to future transcripts, and the learned words are whispered to the speech '
+                     'model so it hears them right more often.'):
+            ttk.Label(f, text=line, wraplength=640, justify="left", foreground="#aaa").grid(row=r, column=0, columnspan=2, sticky="w", pady=(0, 2)); r += 1
+        box = ttk.Frame(f); box.grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 6)); r += 1
+        ttk.Checkbutton(box, text="Learn from corrections", variable=self._var("learning", bool)).pack(side="left")
+        ttk.Checkbutton(box, text="Learn from re-dictations", variable=self._var("learn_from_redictation", bool)).pack(side="left", padx=12)
+        ttk.Checkbutton(box, text='"Correction" takes back the text just inserted', variable=self._var("correction_replaces", bool)).pack(side="left")
+        cols = ("from", "to", "learned", "source", "hits")
+        self.rules_tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse", height=9)
+        for key, title, width, anchor in (("from", "Heard as", 200, "w"), ("to", "Should be", 200, "w"),
+                                          ("learned", "Learned", 120, "w"), ("source", "How", 100, "w"), ("hits", "Used", 50, "e")):
+            self.rules_tree.heading(key, text=title)
+            self.rules_tree.column(key, width=width, anchor=anchor, stretch=key in ("from", "to"))
+        self.rules_tree.grid(row=r, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(f, orient="vertical", command=self.rules_tree.yview); sb.grid(row=r, column=1, sticky="ns")
+        self.rules_tree.configure(yscrollcommand=sb.set); r += 1
+        bbox = ttk.Frame(f); bbox.grid(row=r, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        ttk.Button(bbox, text="Add rule…", command=self._add_rule).pack(side="left")
+        ttk.Button(bbox, text="Remove", command=self._remove_rule).pack(side="left", padx=6)
+        ttk.Button(bbox, text="Correct last dictation…", command=self._correct_last).pack(side="left")
+        ttk.Button(bbox, text="Delete all", command=self._clear_rules).pack(side="right")
+        self.refresh_rules()
+
+    def refresh_rules(self):
+        if not hasattr(self, "rules_tree"):
+            return
+        try:
+            self.rules_tree.delete(*self.rules_tree.get_children())
+            for r in sorted(self.app.learner.rules, key=lambda x: x.get("learned", 0), reverse=True):
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("learned", 0)))
+                self.rules_tree.insert("", "end", iid=r["from"].lower(),
+                                       values=(r["from"], r["to"], when, r.get("source", ""), r.get("hits", 0)))
+        except tk.TclError:
+            pass
+
+    def _add_rule(self):
+        src = simpledialog.askstring("Add rule", "What FreeFlow hears (the wrong words):", parent=self)
+        if not src or not src.strip():
+            return
+        dst = simpledialog.askstring("Add rule", f'What "{src.strip()}" should become:', parent=self)
+        if not dst or not dst.strip():
+            return
+        if self.app.learner.add_rule(src.strip(), dst.strip(), "manual"):
+            self.status.configure(text=f"Learned: {src.strip()} → {dst.strip()}")
+        self.refresh_rules()
+
+    def _remove_rule(self):
+        sel = self.rules_tree.selection()
+        if not sel:
+            return
+        self.app.learner.remove(sel[0])
+        self.refresh_rules()
+
+    def _clear_rules(self):
+        if messagebox.askyesno("Delete all rules", "Forget everything FreeFlow has learned from corrections?", parent=self):
+            self.app.learner.clear()
+            self.refresh_rules()
+
+    def _correct_last(self):
+        last = getattr(self.app, "_last_dictation", None)
+        text = (last or {}).get("text") or ""
+        if not text:
+            entries = self.app.history.entries(1)
+            text = (entries[0].get("text") if entries else "") or ""
+        if not text:
+            self.status.configure(text="Nothing has been dictated yet")
+            return
+        self._correct_dialog(text, "history")
+
+    def _correct_history(self):
+        sel = self.tree.selection()
+        if not sel:
+            self.status.configure(text="Select an entry first")
+            return
+        e = self._history_entries[int(sel[0])]
+        self._correct_dialog(e.get("text") or "", "history")
+
+    def _correct_dialog(self, original: str, source: str):
+        win = tk.Toplevel(self)
+        win.title("Correct the text")
+        win.transient(self)
+        ttk.Label(win, text="Change the words that were heard wrong. FreeFlow learns from every word you change "
+                            "(one to four words at a time) and applies it to future dictations.",
+                  wraplength=540, justify="left").pack(padx=12, pady=(12, 6), anchor="w")
+        t = tk.Text(win, width=66, height=6, wrap="word", undo=True)
+        t.insert("1.0", original)
+        t.pack(padx=12, fill="both", expand=True)
+        res = ttk.Label(win, text="", foreground="#888", wraplength=540, justify="left")
+        res.pack(padx=12, pady=4, anchor="w")
+
+        def learn():
+            edited = t.get("1.0", "end").strip()
+            pairs = self.app.learner.learn(original, edited, source)
+            if pairs:
+                res.configure(text="Learned: " + "; ".join(f"{a} → {b}" for a, b in pairs))
+                self.status.configure(text="Learned " + "; ".join(f"{a} → {b}" for a, b in pairs))
+                self.refresh_rules()
+                win.after(1200, win.destroy)
+            else:
+                res.configure(text="No word-level change found to learn. Change one to four words at a time.")
+        b = ttk.Frame(win); b.pack(padx=12, pady=(0, 12), anchor="e")
+        ttk.Button(b, text="Learn", command=learn).pack(side="left")
+        ttk.Button(b, text="Cancel", command=win.destroy).pack(side="left", padx=6)
+        t.focus_set()
+        win.grab_set()
 
     def _build_about(self, f):
         r = 0

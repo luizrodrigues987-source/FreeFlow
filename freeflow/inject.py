@@ -230,6 +230,28 @@ def type_unicode(text: str, chunk: int = 16, chunk_delay_ms: int = 12):
     _send(events)
 
 
+VK_Z, VK_BACK = 0x5A, 0x08
+
+
+def send_undo():
+    """Ctrl+Z as real key presses: undoes the last paste in most applications."""
+    _send([_scan_events(VK_LCONTROL)])
+    time.sleep(0.03)
+    _send([_scan_events(VK_Z), _scan_events(VK_Z, up=True)])
+    time.sleep(0.03)
+    _send([_scan_events(VK_LCONTROL, up=True)])
+
+
+def send_backspaces(n: int):
+    """n Backspace presses (removes text that was typed character by character)."""
+    events: list[INPUT] = []
+    for _ in range(max(0, n)):
+        events += [_scan_events(VK_BACK), _scan_events(VK_BACK, up=True)]
+    for i in range(0, len(events), 64):
+        _send(events[i:i + 64])
+        time.sleep(0.01)
+
+
 def inject_game_chat(text: str, how: str = "type", restore_clipboard: bool = True,
                      restore_delay_ms: int = 500) -> bool:
     """Put text into a game's chat box that is already open.

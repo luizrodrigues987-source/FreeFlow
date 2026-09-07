@@ -28,7 +28,9 @@ from .config import DATA_DIR, LAST_RECORDING_PATH, Config
 from .history import History
 from .hotkeys import HotkeyManager, pretty_combo
 from . import gamevocab
-from .inject import inject_game_chat, inject_text, press_enter, wait_modifiers_released
+from .inject import inject_game_chat, inject_text, press_enter, send_backspaces, send_undo, wait_modifiers_released
+from .learning import Learner, sentence_similarity, split_correction, words as text_words
+from .postprocess import capitalize_first
 from .llm import LocalLLM, PolishError, polish, resolve_mode, too_short_to_polish
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
 from .recorder import Recorder, save_wav
@@ -89,6 +91,8 @@ class App:
         self.root: Optional[tk.Tk] = None
         self.overlay = None
         self._followed = 0            # window whose monitor shows the indicator
+        self.learner = Learner(DATA_DIR)
+        self._last_dictation: Optional[dict] = None   # what was inserted last (for corrections)
         self.tray = None
         self.settings_win = None
 
@@ -753,6 +757,9 @@ class App:
             self.ui(self.overlay.show, "loading", "Loading speech model…")
             engine.ready.wait()
         vocab = [w.strip() for w in (self.cfg.get("vocabulary") or []) if w.strip()]
+        learning = bool(self.cfg.get("learning", True))
+        if learning:
+            vocab = self.learner.vocabulary() + vocab      # words learned from corrections, then the user's list
         game_vocab = job.app_exe.lower() in self._game_apps() and bool(self.cfg.get("game_vocab", True))
         if game_vocab:
             # League jargon, items and champion names for Whisper; the user's own words come last (they count most)
@@ -765,6 +772,14 @@ class App:
             return
         log.info("Raw transcript (%.2fs): %r", time.time() - t0, raw[:200])
         text = clean_transcript(raw, self.cfg, job.rms, job.duration)
+        undo_last = None
+        correction = split_correction(text) if (text and learning) else None
+        if correction is not None:
+            text, undo_last = self._handle_correction(correction, job)
+            if not text:
+                return
+        elif text and learning:
+            text = self.learner.apply(text)
         if text and game_vocab:
             text = gamevocab.correct_game_text(text)
         if not text:
@@ -789,6 +804,8 @@ class App:
                 if time.time() - self._last_polish_warning > 300:
                     self._last_polish_warning = time.time()
                     self.ui(self.tray.notify, f"AI clean-up skipped: {e}", "FreeFlow")
+        if learning and correction is None and self.cfg.get("learn_from_redictation", True):
+            self._maybe_learn_redictation(text)
         final = finalize_for_injection(text, self.cfg)
         method = self.cfg.get("inject_method", "paste")
         type_apps = {a.strip().lower() for a in (self.cfg.get("type_method_apps") or []) if a.strip()}
@@ -813,6 +830,8 @@ class App:
         exe_l = (target.get("exe") or job.app_exe or "").lower()
         chat_open = {a.strip().lower() for a in (self.cfg.get("chat_open_apps") or []) if a.strip()}
         chat_send = {a.strip().lower() for a in (self.cfg.get("chat_send_apps") or []) if a.strip()}
+        if undo_last is not None:
+            self._undo_insertion(undo_last)
         if exe_l in chat_open or exe_l in chat_send:
             final = " ".join(part.strip() for part in final.splitlines() if part.strip())
             if self.cfg.get("append_space", True):
@@ -834,6 +853,10 @@ class App:
             press_enter()
         if ok and target.get("hwnd") and (target.get("editable") is True or target.get("redirected")):
             self._last_target = {"hwnd": target["hwnd"], "exe": target.get("exe", ""), "title": target.get("title", "")}
+        if ok:
+            self._last_dictation = {"text": text, "final": final, "time": time.time(), "hwnd": int(target.get("hwnd") or 0),
+                                    "method": method, "presses": self.hotkeys.presses,
+                                    "game": exe_l in chat_open or exe_l in chat_send}
         elapsed = time.time() - t0
         if self.cfg.get("history_enabled", True):
             try:
@@ -846,6 +869,68 @@ class App:
                  method, "ok" if ok else "FAILED")
         if self.settings_win is not None:
             self.ui(self.settings_win.refresh_history)
+
+    # ------------------------------------------------------------------
+    # learning from corrections
+    # ------------------------------------------------------------------
+    def _handle_correction(self, corrected: str, job: Job) -> tuple:
+        """Spoken "correction ...": learn the difference to the last dictation; returns
+        (text to insert, last dictation to take back first or None)."""
+        last = self._last_dictation
+        if not corrected:
+            if self.cfg.get("overlay", True):
+                self.ui(self.overlay.show, "info", 'Say "correction" and then the right words', 2200)
+            return "", None
+        if self.cfg.get("capitalize_first", True):
+            corrected = capitalize_first(corrected)
+        if not last:
+            log.info("Correction without a previous dictation; inserting %r", corrected)
+            return corrected, None
+        learned = self.learner.learn(last["text"], corrected, "voice")
+        if learned:
+            msg = "; ".join(f"{a} → {b}" for a, b in learned)
+            log.info("Correction learned: %s", msg)
+            self.ui(self.tray.notify, f"Learned: {msg}", "FreeFlow")
+        else:
+            log.info("Correction with no word-level difference: %r -> %r", last["text"], corrected)
+        undo = None
+        if self.cfg.get("correction_replaces", True) and self._can_undo(last, job):
+            undo = last
+        return corrected, undo
+
+    def _can_undo(self, last: dict, job: Job) -> bool:
+        """The last insertion can be taken back when it is recent, went to the same window, was not a
+        game chat message, and the user has not typed anything since."""
+        hwnd = int((job.target or {}).get("hwnd") or 0)
+        return bool(time.time() - last["time"] < 180 and last["hwnd"] and last["hwnd"] == hwnd
+                    and not last.get("game") and self.hotkeys.presses == last["presses"])
+
+    def _undo_insertion(self, last: dict):
+        wait_modifiers_released()
+        if last["method"] == "paste":
+            send_undo()
+        else:
+            send_backspaces(len(last["final"]))
+        time.sleep(0.15)
+        log.info("Took back the previous insertion (%s)", last["method"])
+
+    def _maybe_learn_redictation(self, text: str):
+        """The same sentence dictated again within a short time: note the changed words; a fix seen
+        twice becomes a rule."""
+        last = self._last_dictation
+        if not last or time.time() - last["time"] > 45 or len(text_words(text)) < 2:
+            return
+        sim = sentence_similarity(last["text"], text)
+        if sim < 0.6 or sim > 0.999:
+            return
+        learned, noted = self.learner.learn_auto(last["text"], text)
+        if learned:
+            msg = "; ".join(f"{a} → {b}" for a, b in learned)
+            log.info("Learned from re-dictation: %s", msg)
+            self.ui(self.tray.notify, f"Learned: {msg} (Settings > Learning to undo)", "FreeFlow")
+        elif noted:
+            log.info("Possible correction noted, learned when heard again: %s",
+                     "; ".join(f"{a} -> {b}" for a, b in noted))
 
     def _fail(self, msg: str):
         log.error(msg)
