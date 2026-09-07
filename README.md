@@ -31,7 +31,15 @@ into whatever app has the cursor.
   Enter to send; list the game under "send after" as well to send automatically. "Insert by" offers a slow
   Ctrl+V chord or real keystrokes for games that ignore Unicode input. Chat messages are one line: line
   breaks become spaces. Game chat skips the AI clean-up (the small model once turned "you are being
-  useless" into "I am being useless"); the rule-based clean-up still runs. Games are never asked accessibility
+  useless" into "I am being useless"); the rule-based clean-up still runs.
+- **League vocabulary**: for game chat, Whisper is primed with League jargon, common items, runes and the
+  hardest champion names (gank, kite, peel, inhib, Baron Nashor, Atakhan, Zhonya's, Kai'Sa, Cho'Gath ...),
+  and the result is corrected the way players write it: acronyms (ADC, AoE, gg wp), known mishearings
+  (Barron -> Baron, Harold -> Herald, gang mid -> gank mid, in hip -> inhib) and all 173 champion names
+  in their official spelling (kaisa -> Kai'Sa, shin zao -> Xin Zhao, Tryndamir -> Tryndamere). The
+  champion list refreshes itself from Riot's Data Dragon once a week. On spoken test sentences the exact
+  match rate went from 7/16 to 12/16. Settings > Formatting: switch it off, or add your own game words
+  (teammates' names, more champions). See `freeflow/gamevocab.py`. Games are never asked accessibility
   questions (a League match once kept FreeFlow waiting 30 s for an answer), and any other window gets half
   a second to describe its focused control before the text simply stays where you are. For games that
   only react to real keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
@@ -118,6 +126,7 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/recorder.py` | microphone capture |
 | `freeflow/transcribe.py` | faster-whisper / OpenAI / Groq engines |
 | `freeflow/postprocess.py` | filler removal, voice commands, replacements |
+| `freeflow/gamevocab.py` | League of Legends vocabulary for game chat (Whisper prompt, corrections, champion names) |
 | `freeflow/llm.py` | optional Claude / OpenAI polish |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |

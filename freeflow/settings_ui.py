@@ -300,6 +300,9 @@ class SettingsWindow(tk.Toplevel):
         self._label(f, "Game chat: send after", r); self._entry(f, "chat_send_apps", r, width=40)
         self.v["chat_send_apps"].set(", ".join(self.cfg.get("chat_send_apps") or [])); r += 1
         self._label(f, "Game chat: insert by", r); self._combo(f, "chat_insert", ["type", "paste", "keys"], r, width=10); r += 1
+        self._check(f, "game_vocab", "League of Legends vocabulary for game chat (jargon, items, champion names)", r); r += 1
+        self._label(f, "Extra game words", r); self._entry(f, "game_vocabulary", r, width=40)
+        self.v["game_vocabulary"].set(", ".join(self.cfg.get("game_vocabulary") or [])); r += 1
         ttk.Label(f, text="Games where FreeFlow presses Enter to open the chat before inserting / to send the message "
                           "afterwards. Insert by: type = Unicode characters (safe, never triggers abilities), "
                           "paste = slow Ctrl+V, keys = real keystrokes (only if the others fail).",
@@ -545,6 +548,7 @@ class SettingsWindow(tk.Toplevel):
         data["smart_target_text_apps"] = [a.strip() for a in data.get("smart_target_text_apps", "").split(",") if a.strip()]
         data["chat_open_apps"] = [a.strip() for a in data.get("chat_open_apps", "").split(",") if a.strip()]
         data["chat_send_apps"] = [a.strip() for a in data.get("chat_send_apps", "").split(",") if a.strip()]
+        data["game_vocabulary"] = [a.strip() for a in data.get("game_vocabulary", "").split(",") if a.strip()]
         for key in ("openai_api_key", "groq_api_key", "anthropic_api_key", "local_model", "claude_model",
                     "openai_model", "groq_model", "openai_polish_model", "ollama_model", "ollama_url"):
             data[key] = str(data.get(key, "")).strip()

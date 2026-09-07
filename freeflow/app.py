@@ -27,6 +27,7 @@ from . import audioctl, autostart, focus, sounds, updater
 from .config import DATA_DIR, LAST_RECORDING_PATH, Config
 from .history import History
 from .hotkeys import HotkeyManager, pretty_combo
+from . import gamevocab
 from .inject import inject_game_chat, inject_text, press_enter, wait_modifiers_released
 from .llm import LocalLLM, PolishError, polish, resolve_mode, too_short_to_polish
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
@@ -142,6 +143,9 @@ class App:
         threading.Thread(target=self._controller_loop, name="controller", daemon=True).start()
         threading.Thread(target=self._worker_loop, name="worker", daemon=True).start()
         focus.warm_up()
+        if self.cfg.get("game_vocab", True):
+            gamevocab.load_cached_champions(DATA_DIR)
+            gamevocab.refresh_champions(DATA_DIR)
         self._load_engine()
         self._setup_local_llm()
         self.root.after(30, self._pump_ui)
@@ -741,6 +745,10 @@ class App:
             self.ui(self.overlay.show, "loading", "Loading speech model…")
             engine.ready.wait()
         vocab = [w.strip() for w in (self.cfg.get("vocabulary") or []) if w.strip()]
+        game_vocab = job.app_exe.lower() in self._game_apps() and bool(self.cfg.get("game_vocab", True))
+        if game_vocab:
+            # League jargon, items and champion names for Whisper; the user's own words come last (they count most)
+            vocab = gamevocab.whisper_terms(list(self.cfg.get("game_vocabulary") or []) + vocab)
         prompt = build_whisper_prompt(vocab, bool(self.cfg.get("whisper_punctuation_prompt", True)))
         try:
             raw = engine.transcribe(job.audio, self.cfg.get("language", "en"), prompt)
@@ -749,6 +757,8 @@ class App:
             return
         log.info("Raw transcript (%.2fs): %r", time.time() - t0, raw[:200])
         text = clean_transcript(raw, self.cfg, job.rms, job.duration)
+        if text and game_vocab:
+            text = gamevocab.correct_game_text(text)
         if not text:
             if self.cfg.get("overlay", True):
                 self.ui(self.overlay.show, "info", "No speech detected", 1200)
