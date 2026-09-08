@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 
 from . import APP_VERSION, audioctl, autostart
 from .config import DATA_DIR, LOG_PATH
@@ -407,15 +407,37 @@ class SettingsWindow(tk.Toplevel):
             pass
 
     def _add_rule(self):
-        src = simpledialog.askstring("Add rule", "What FreeFlow hears (the wrong words):", parent=self)
-        if not src or not src.strip():
-            return
-        dst = simpledialog.askstring("Add rule", f'What "{src.strip()}" should become:', parent=self)
-        if not dst or not dst.strip():
-            return
-        if self.app.learner.add_rule(src.strip(), dst.strip(), "manual"):
-            self.status.configure(text=f"Learned: {src.strip()} → {dst.strip()}")
-        self.refresh_rules()
+        """Small dialog: what FreeFlow hears -> what it should write (tkinter.simpledialog is not in the
+        packaged build, so this is a plain Toplevel)."""
+        win = tk.Toplevel(self)
+        win.title("Add rule")
+        win.transient(self)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="What FreeFlow hears (the wrong words):").grid(row=0, column=0, sticky="w")
+        src_var, dst_var = tk.StringVar(), tk.StringVar()
+        e1 = ttk.Entry(frm, textvariable=src_var, width=44); e1.grid(row=1, column=0, sticky="we", pady=(2, 8))
+        ttk.Label(frm, text="What it should become:").grid(row=2, column=0, sticky="w")
+        e2 = ttk.Entry(frm, textvariable=dst_var, width=44); e2.grid(row=3, column=0, sticky="we", pady=(2, 8))
+        msg = ttk.Label(frm, text="", foreground="#888"); msg.grid(row=4, column=0, sticky="w")
+
+        def ok(_event=None):
+            src, dst = src_var.get().strip(), dst_var.get().strip()
+            if not src or not dst:
+                msg.configure(text="Both fields are needed")
+                return
+            if self.app.learner.add_rule(src, dst, "manual"):
+                self.status.configure(text=f"Learned: {src} → {dst}")
+            self.refresh_rules()
+            win.destroy()
+        b = ttk.Frame(frm); b.grid(row=5, column=0, sticky="e", pady=(6, 0))
+        ttk.Button(b, text="Learn", command=ok).pack(side="left")
+        ttk.Button(b, text="Cancel", command=win.destroy).pack(side="left", padx=6)
+        win.bind("<Return>", ok)
+        win.bind("<Escape>", lambda e: win.destroy())
+        e1.focus_set()
+        win.grab_set()
 
     def _remove_rule(self):
         sel = self.rules_tree.selection()
