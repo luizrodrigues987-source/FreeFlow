@@ -74,8 +74,9 @@ into whatever app has the cursor.
   back (undo, if you have not typed since), the fix is inserted, and "loco host -> localhost" is learned.
   Fixing the words by typing teaches it too: for a couple of minutes after each insertion FreeFlow reads
   the text box it pasted into (through Windows accessibility, never keystrokes), and once you have
-  changed a word of the inserted text and stopped typing, the change is learned; text you add is ignored,
-  and a sent message ends the watch. Dictating the same sentence again also teaches it (a fix seen twice
+  changed a word of the inserted text and stopped typing for three seconds, or the moment you press
+  Enter to send, the change is learned; text you add is ignored, a further dictation into the same box
+  extends the watched text, and a sent message ends the watch. Dictating the same sentence again also teaches it (a fix seen twice
   becomes a rule), and any entry under Settings > History can be corrected by hand. Rules are applied to every later transcript, and the learned
   words are whispered to the speech model so it hears them right in the first place. Settings > Learning
   lists the rules (heard as / should be / how / used) and lets you remove or add them.

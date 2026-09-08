@@ -95,6 +95,7 @@ class App:
         self.learner = Learner(DATA_DIR)
         self._last_dictation: Optional[dict] = None   # what was inserted last (for corrections)
         self.editwatch = EditWatcher(self._on_typed_edit, lambda: self.hotkeys.presses)
+        self.hotkeys.on_key_down = self.editwatch.key_pressed
         self.tray = None
         self.settings_win = None
 
@@ -861,7 +862,8 @@ class App:
             self._last_dictation = {"text": text, "final": final, "time": time.time(), "hwnd": int(target.get("hwnd") or 0),
                                     "method": method, "presses": self.hotkeys.presses, "game": game}
             if learning and not game and self.cfg.get("learn_from_edits", True):
-                self.editwatch.start(final)        # learn if the user fixes these words by typing
+                # learn if the user fixes these words by typing
+                self.editwatch.start(final, label=focus.app_label(target.get("exe", ""), target.get("title", "")))
         elapsed = time.time() - t0
         if self.cfg.get("history_enabled", True):
             try:
@@ -922,6 +924,7 @@ class App:
     def _on_typed_edit(self, wrong: str, right: str):
         """The user changed words of the inserted text by typing (edit watcher thread)."""
         if self.learner.add_rule(wrong, right, "typing"):
+            log.info("Typed fix learned: %r -> %r", wrong, right)
             self.ui(self.tray.notify, f"Learned from your edit: {wrong} → {right} (Settings > Learning to undo)", "FreeFlow")
 
     def _maybe_learn_redictation(self, text: str):

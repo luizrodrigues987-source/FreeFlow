@@ -2,10 +2,14 @@
 
 After FreeFlow inserts text, the text box it went into is watched for a while: its content is read
 through UI Automation (Text or Value pattern, on the inspection thread with time-outs, so a slow
-application can never block anything).  When the words that were inserted have been changed by hand
-and the user has stopped typing, the changed words are reported: "loco host" -> "localhost" becomes a
-learned rule (see learning.py).  Text the user appends is ignored, and so is a message that was sent
-(the box became empty).  Games and controls that expose no text are simply not watched.
+application can never block anything).  When the words that were inserted have been changed by hand,
+the changed words are reported: "loco host" -> "localhost" becomes a learned rule (see learning.py).
+
+A change counts once the text has been left alone for a moment - or the instant Enter is pressed:
+the keyboard hook sees the key before the application does, so the box is read right then, before a
+chat message is sent and the box empties.  Text the user appends is ignored; a box that was emptied
+(message sent) ends the watch; a further insertion into the same box extends the watched text instead
+of replacing it.  Games and controls that expose no text are simply not watched.
 """
 from __future__ import annotations
 
@@ -21,8 +25,10 @@ log = logging.getLogger(__name__)
 
 UIA_TextPatternId = 10014
 UIA_ValuePatternId = 10002
+VK_RETURN = 0x0D
 WATCH_SECONDS = 150.0     # how long after an insertion edits are watched for
-POLL_S = 2.0              # how often the text box is read
+POLL_S = 2.0              # how often the text box is read while nothing is being typed
+POLL_TYPING_S = 0.4       # ... and while keys are being pressed
 SETTLE_S = 3.0            # an edit counts once the text has been unchanged this long and no key was pressed
 MAX_TEXT = 40000          # characters read from the control at most
 ANCHOR = 80               # characters before the insertion used to find it again
@@ -65,20 +71,34 @@ class EditWatcher:
         self.key_presses = key_presses
         self._gen = 0
         self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._last_key = (0, 0.0)           # (vk, time.monotonic()) of the last real key press
+        self._prev: Optional[tuple] = None  # (target, element) of the watch that is running
         self.watching = False
-        self.last_result = ""       # for tests / diagnostics
+        self.last_result = ""               # for tests / diagnostics
+        self.label = ""
 
-    def start(self, inserted: str, element_getter: Optional[Callable] = None):
+    # ------------------------------------------------------------------
+    def key_pressed(self, vk: int, t: Optional[float] = None):
+        """Called from the keyboard hook for every real key press (must return at once)."""
+        self._last_key = (vk, t or time.monotonic())
+        if vk == VK_RETURN and self.watching:
+            self._wake.set()                # read the box now, before the application acts on the Enter
+
+    def start(self, inserted: str, element_getter: Optional[Callable] = None, label: str = ""):
         """Begin watching for edits of `inserted` in the control that has the focus right now."""
         with self._lock:
             self._gen += 1
             gen = self._gen
+        self.label = label
         threading.Thread(target=self._run, args=(gen, inserted, element_getter or focused_element),
                          name="edit-watch", daemon=True).start()
 
     def stop(self):
         with self._lock:
             self._gen += 1
+        self._prev = None
+        self._wake.set()
 
     def _alive(self, gen: int) -> bool:
         return gen == self._gen
@@ -95,69 +115,98 @@ class EditWatcher:
             return None
         return value if status == "ok" else None
 
+    # ------------------------------------------------------------------
     def _run(self, gen: int, inserted: str, getter):
         time.sleep(0.4)                       # let the application take the paste in
         target = _squash(inserted)
         if not target or not self._alive(gen):
             return
         box: dict = {}
+        prev = self._prev
+        if prev is not None and prev[1] is not None:
+            box["el"] = prev[1]               # same control as before: keep the element we already have
         base = self._read(getter, box)
         if base is None:
             self.last_result = "no text access"
-            log.debug("edit watch: the control exposes no text; not watching")
+            log.info("Typed fixes: %s gives no text access; not watching", self.label or "the window")
             return
         base_n = _squash(base)
         pos = base_n.rfind(target)
         if pos < 0:
             self.last_result = "inserted text not found"
-            log.debug("edit watch: inserted text not found in the control; not watching")
+            log.info("Typed fixes: inserted text not found in %s; not watching", self.label or "the box")
             return
+        if prev is not None and base_n[:pos].rstrip().endswith(prev[0].rstrip()):
+            # appended to the text we were already watching: watch the whole of it
+            pos = pos - len(base_n[:pos]) + len(base_n[:pos].rstrip()) - len(prev[0].rstrip())
+            target = base_n[pos:]
         before = base_n[max(0, pos - ANCHOR):pos]
+        self._prev = (target, box.get("el"))
         self.watching = True
         self.last_result = "watching"
+        log.info("Typed fixes: watching %s for changes to %r", self.label or "the box", target[:60])
         learned: set = set()
-        last_region = target
+        last_region, region_time = target, time.time()
         changed_at = 0.0
         presses = self.key_presses()
         end = time.time() + WATCH_SECONDS
         try:
             while time.time() < end and self._alive(gen):
-                time.sleep(POLL_S)
+                typing = time.monotonic() - self._last_key[1] < 2.0
+                self._wake.wait(POLL_TYPING_S if typing else POLL_S)
+                woke = self._wake.is_set()
+                self._wake.clear()
                 if not self._alive(gen):
                     break
                 cur = self._read(getter, box)
                 if cur is None:
                     continue
                 cur_n = _squash(cur)
+                now = time.time()
                 if not cur_n:
-                    region = ""           # the box was emptied: the message was sent or the text deleted
+                    region = ""               # the box was emptied: the message was sent or the text deleted
                 elif before:
                     a = cur_n.rfind(before)
                     if a < 0:
-                        continue          # text before the insertion changed too: cannot locate it now
+                        continue              # text before the insertion changed too: cannot locate it now
                     region = cur_n[a + len(before):]
                 else:
                     region = cur_n
-                now = time.time()
-                p = self.key_presses()
-                if region != last_region or p != presses:
-                    last_region, presses = region, p
-                    changed_at = now
-                    continue
-                if region == target or not changed_at or now - changed_at < SETTLE_S:
-                    continue
                 if not region:
+                    # gone: learn from the last state we saw, if it was seen after the last typing key
+                    # (Enter itself does not count) and had been changed
+                    vk, t_key = self._last_key
+                    fresh = vk == VK_RETURN or region_time >= t_key - 0.05 or woke
+                    if last_region and last_region != target and fresh:
+                        self._learn(target, last_region, learned)
                     self.last_result = "text gone"
-                    break                     # sent or deleted: nothing more to learn here
-                pairs = [(s, d) for s, d in extract_corrections(target, region, strict=True) if (s.lower(), d.lower()) not in learned]
-                for src, dst in pairs:
-                    learned.add((src.lower(), dst.lower()))
-                    try:
-                        self.on_edit(src, dst)
-                    except Exception:
-                        log.exception("on_edit failed")
-                changed_at = 0.0               # this state has been handled; wait for the next change
+                    break
+                if region != last_region:
+                    last_region, region_time = region, time.monotonic()
+                    changed_at = now
+                    presses = self.key_presses()
+                    continue
+                region_time = time.monotonic()
+                p = self.key_presses()
+                if p != presses:
+                    presses, changed_at = p, now
+                    continue
+                if region == target or not changed_at:
+                    continue
+                if woke or now - changed_at >= SETTLE_S:
+                    self._learn(target, region, learned)
+                    changed_at = 0.0           # this state has been handled; wait for the next change
         finally:
             self.watching = False
             if self.last_result == "watching":
                 self.last_result = "done"
+
+    def _learn(self, target: str, region: str, learned: set):
+        pairs = [(s, d) for s, d in extract_corrections(target, region, strict=True)
+                 if (s.lower(), d.lower()) not in learned]
+        for src, dst in pairs:
+            learned.add((src.lower(), dst.lower()))
+            try:
+                self.on_edit(src, dst)
+            except Exception:
+                log.exception("on_edit failed")

@@ -308,6 +308,7 @@ class HotkeyManager:
         self._lock = threading.Lock()
         self.pressed: set[int] = set()
         self.presses = 0              # real (not injected) key presses outside the hotkey, ever
+        self.on_key_down = None       # optional observer(vk, t) for real key presses; must return at once
         self.combo: list[frozenset[int]] = []
         self.combo_vks: set[int] = set()
         self.cancel_vks: set[int] = set()
@@ -476,6 +477,11 @@ class HotkeyManager:
                 send_dummy_key()
             except Exception:
                 log.exception("dummy key failed")
+        if down and not injected and vk not in MODIFIER_VKS and self.on_key_down is not None:
+            try:
+                self.on_key_down(vk, now)
+            except Exception:
+                log.exception("key observer failed")
         if fire:
             try:
                 if fire[0] == "activate":
