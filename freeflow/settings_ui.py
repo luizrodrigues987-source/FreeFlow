@@ -369,6 +369,8 @@ class SettingsWindow(tk.Toplevel):
         ttk.Label(f, text="FreeFlow learns the way you say things", font=("Segoe UI", 11, "bold")).grid(row=r, column=0, columnspan=2, sticky="w"); r += 1
         for line in ('• Right after a bad dictation, hold the hotkey and say "correction" followed by the right words, '
                      'e.g. "correction: start localhost". The wrong text is taken back and the fix is inserted.',
+                     '• Or just fix the words by typing: FreeFlow watches the text box for a couple of minutes '
+                     'after each insertion and learns what you changed.',
                      '• Or simply dictate the sentence again: a fix that shows up twice is learned by itself.',
                      '• Or select an entry under History and click "Correct…", or add a rule below.',
                      'Every rule is applied to future transcripts, and the learned words are whispered to the speech '
@@ -376,7 +378,8 @@ class SettingsWindow(tk.Toplevel):
             ttk.Label(f, text=line, wraplength=640, justify="left", foreground="#aaa").grid(row=r, column=0, columnspan=2, sticky="w", pady=(0, 2)); r += 1
         box = ttk.Frame(f); box.grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 6)); r += 1
         ttk.Checkbutton(box, text="Learn from corrections", variable=self._var("learning", bool)).pack(side="left")
-        ttk.Checkbutton(box, text="Learn from re-dictations", variable=self._var("learn_from_redictation", bool)).pack(side="left", padx=12)
+        ttk.Checkbutton(box, text="Learn from typed fixes", variable=self._var("learn_from_edits", bool)).pack(side="left", padx=12)
+        ttk.Checkbutton(box, text="Learn from re-dictations", variable=self._var("learn_from_redictation", bool)).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(box, text='"Correction" takes back the text just inserted', variable=self._var("correction_replaces", bool)).pack(side="left")
         cols = ("from", "to", "learned", "source", "hits")
         self.rules_tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse", height=9)

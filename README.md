@@ -72,8 +72,11 @@ into whatever app has the cursor.
 - **Learns how you speak**: corrections become rules. Right after a bad dictation, hold the hotkey and
   say "correction" followed by the right words ("correction: start localhost"): the wrong text is taken
   back (undo, if you have not typed since), the fix is inserted, and "loco host -> localhost" is learned.
-  Dictating the same sentence again also teaches it (a fix seen twice becomes a rule), and any entry under
-  Settings > History can be corrected by hand. Rules are applied to every later transcript, and the learned
+  Fixing the words by typing teaches it too: for a couple of minutes after each insertion FreeFlow reads
+  the text box it pasted into (through Windows accessibility, never keystrokes), and once you have
+  changed a word of the inserted text and stopped typing, the change is learned; text you add is ignored,
+  and a sent message ends the watch. Dictating the same sentence again also teaches it (a fix seen twice
+  becomes a rule), and any entry under Settings > History can be corrected by hand. Rules are applied to every later transcript, and the learned
   words are whispered to the speech model so it hears them right in the first place. Settings > Learning
   lists the rules (heard as / should be / how / used) and lets you remove or add them.
 - Tray icon, history, start-with-Windows, crash-safe unmuting.
@@ -136,6 +139,7 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/postprocess.py` | filler removal, voice commands, replacements |
 | `freeflow/gamevocab.py` | League of Legends vocabulary for game chat (Whisper prompt, corrections, champion names) |
 | `freeflow/learning.py` | learned corrections: "correction ..." command, re-dictations, History edits -> rules + Whisper vocabulary |
+| `freeflow/editwatch.py` | watches the text box after an insertion (UI Automation) and learns words fixed by typing |
 | `freeflow/llm.py` | optional Claude / OpenAI polish |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |

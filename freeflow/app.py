@@ -30,6 +30,7 @@ from .hotkeys import HotkeyManager, pretty_combo
 from . import gamevocab
 from .inject import inject_game_chat, inject_text, press_enter, send_backspaces, send_undo, wait_modifiers_released
 from .learning import Learner, sentence_similarity, split_correction, words as text_words
+from .editwatch import EditWatcher
 from .postprocess import capitalize_first
 from .llm import LocalLLM, PolishError, polish, resolve_mode, too_short_to_polish
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
@@ -93,6 +94,7 @@ class App:
         self._followed = 0            # window whose monitor shows the indicator
         self.learner = Learner(DATA_DIR)
         self._last_dictation: Optional[dict] = None   # what was inserted last (for corrections)
+        self.editwatch = EditWatcher(self._on_typed_edit, lambda: self.hotkeys.presses)
         self.tray = None
         self.settings_win = None
 
@@ -507,6 +509,7 @@ class App:
         # 1) Before anything else (chime, indicator, even opening our own mic): take the microphone away
         #    from Discord & co., so nobody in a call hears the chime or the first words.
         self._cancel_pending_unmute()
+        self.editwatch.stop()                 # a new dictation: stop watching the previous insertion
         t0 = time.monotonic()
         mic_mode = self.cfg.get("mute_mic_mode", "list")
         if mic_mode in ("list", "all"):
@@ -854,9 +857,11 @@ class App:
         if ok and target.get("hwnd") and (target.get("editable") is True or target.get("redirected")):
             self._last_target = {"hwnd": target["hwnd"], "exe": target.get("exe", ""), "title": target.get("title", "")}
         if ok:
+            game = exe_l in chat_open or exe_l in chat_send
             self._last_dictation = {"text": text, "final": final, "time": time.time(), "hwnd": int(target.get("hwnd") or 0),
-                                    "method": method, "presses": self.hotkeys.presses,
-                                    "game": exe_l in chat_open or exe_l in chat_send}
+                                    "method": method, "presses": self.hotkeys.presses, "game": game}
+            if learning and not game and self.cfg.get("learn_from_edits", True):
+                self.editwatch.start(final)        # learn if the user fixes these words by typing
         elapsed = time.time() - t0
         if self.cfg.get("history_enabled", True):
             try:
@@ -913,6 +918,11 @@ class App:
             send_backspaces(len(last["final"]))
         time.sleep(0.15)
         log.info("Took back the previous insertion (%s)", last["method"])
+
+    def _on_typed_edit(self, wrong: str, right: str):
+        """The user changed words of the inserted text by typing (edit watcher thread)."""
+        if self.learner.add_rule(wrong, right, "typing"):
+            self.ui(self.tray.notify, f"Learned from your edit: {wrong} → {right} (Settings > Learning to undo)", "FreeFlow")
 
     def _maybe_learn_redictation(self, text: str):
         """The same sentence dictated again within a short time: note the changed words; a fix seen
