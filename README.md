@@ -68,7 +68,9 @@ into whatever app has the cursor.
   gain, then dots while transcribing, then a check mark; purple bars mean hands-free). Click it to start
   or stop hands-free dictation, right-click for Settings. Settings > General can switch it to "only
   while dictating". With several monitors it sits on the monitor of the window in front (the mouse's
-  monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text.
+  monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text. It
+  checks its own window once a second and puts itself back when something hid or moved it ("Show
+  desktop" minimising it, a display change, another window taking the top spot); each repair is logged.
 - **Learns how you speak**: corrections become rules. Right after a bad dictation, hold the hotkey and
   say "correction" followed by the right words ("correction: start localhost"): the wrong text is taken
   back (undo, if you have not typed since), the fix is inserted, and "loco host -> localhost" is learned.

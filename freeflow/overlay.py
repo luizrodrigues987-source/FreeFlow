@@ -32,6 +32,19 @@ WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 HWND_TOPMOST = ctypes.c_void_p(-1 & 0xFFFFFFFFFFFFFFFF)
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+SW_SHOWNOACTIVATE = 4
+user32.IsIconic.argtypes = [ctypes.c_void_p]
+user32.IsIconic.restype = ctypes.c_bool
+user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+user32.IsWindowVisible.restype = ctypes.c_bool
+user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.ShowWindow.restype = ctypes.c_bool
+user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.RECT)]
+user32.GetWindowRect.restype = ctypes.c_bool
+user32.GetLayeredWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.DWORD), ctypes.POINTER(ctypes.c_ubyte),
+                                              ctypes.POINTER(wt.DWORD)]
+user32.GetLayeredWindowAttributes.restype = ctypes.c_bool
+GUARD_MS = 1000           # how often the indicator checks that nothing hid or moved it
 SPI_GETWORKAREA = 0x0030
 user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
 user32.SetWindowPos.restype = ctypes.c_bool
@@ -197,6 +210,9 @@ class Overlay:
         self._apply_exstyle()
         self._give_focus_back(previous_fg)
         self.root.after(1, lambda: self._give_focus_back(previous_fg))
+        self.repairs = 0
+        self._last_top = 0.0
+        self.win.after(GUARD_MS, self._guard)
         if self.mode == "island":
             self.root.after(50, self.show_idle)
 
@@ -239,7 +255,8 @@ class Overlay:
             self._monitor = mon
             self._place(max(2, int(round(self._cur_w))), max(2, int(round(self._cur_h))))
 
-    def _place(self, w: int, h: int):
+    def _target_xy(self, w: int, h: int) -> tuple[int, int]:
+        """Where a w x h indicator belongs on the monitor it follows."""
         wa = work_area(self.follow_hwnd)
         self._monitor = monitor_of(self.follow_hwnd)
         if wa:
@@ -249,7 +266,57 @@ class Overlay:
         margin = round(14 * self.s)
         x = left + (right - left - w) // 2
         y = top + margin if self.position == "top" else bottom - h - margin
+        return x, y
+
+    def _place(self, w: int, h: int):
+        x, y = self._target_xy(w, h)
         self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _guard(self):
+        """Once a second: undo whatever hid or moved the indicator - "Show desktop" minimising it, a
+        display change moving it, another window taking the top spot, a lost alpha - and log it."""
+        try:
+            self.win.after(GUARD_MS, self._guard)
+        except tk.TclError:
+            return                                      # window gone (shutdown)
+        if not self._visible or self._anim is not None:
+            return                                      # hidden on purpose, or moving right now
+        try:
+            hwnd = self._hwnd()
+            fixed = []
+            if user32.IsIconic(hwnd):
+                fixed.append("minimised")
+            elif not user32.IsWindowVisible(hwnd):
+                fixed.append("hidden")
+            if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST:
+                fixed.append("not on top")
+            key, alpha, flags = wt.DWORD(), ctypes.c_ubyte(), wt.DWORD()
+            if user32.GetLayeredWindowAttributes(hwnd, ctypes.byref(key), ctypes.byref(alpha), ctypes.byref(flags)) \
+                    and flags.value & 0x02 and alpha.value == 0:
+                fixed.append("transparent")
+            w, h = max(2, int(round(self._cur_w))), max(2, int(round(self._cur_h)))
+            x, y = self._target_xy(w, h)
+            r = wt.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(r)) and not user32.IsIconic(hwnd) \
+                    and (abs(r.left - x) > 2 or abs(r.top - y) > 2):
+                fixed.append(f"moved to {r.left},{r.top}")
+            now = time.time()
+            if fixed:
+                if "minimised" in fixed or "hidden" in fixed:
+                    user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                if "transparent" in fixed:
+                    self.win.attributes("-alpha", 1.0)
+                self.win.geometry(f"{w}x{h}+{x}+{y}")
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                self._last_top = now
+                self.repairs += 1
+                log.info("Indicator restored (%s)", ", ".join(fixed))
+            elif now - self._last_top > 5:
+                # quietly keep the top spot (other windows can be raised above a topmost window)
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                self._last_top = now
+        except Exception as e:
+            log.debug("indicator guard failed: %s", e)
 
     def _set_size(self, w: float, h: float):
         self._cur_w, self._cur_h = float(w), float(h)
