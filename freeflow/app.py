@@ -95,7 +95,11 @@ class App:
         self.learner = Learner(DATA_DIR)
         self._last_dictation: Optional[dict] = None   # what was inserted last (for corrections)
         self.editwatch = EditWatcher(self._on_typed_edit, lambda: self.hotkeys.presses)
-        self.hotkeys.on_key_down = self.editwatch.key_pressed
+        self.hotkeys.on_key_down = self._key_observed
+        self._last_key_t = 0.0            # monotonic time of the last real key press (any app)
+        self._last_dictation_t = 0.0      # monotonic time of the last recording start / stop
+        self._restart_pending = 0         # revision of a downloaded update waiting for a quiet moment
+        self._last_restart_check = 0.0
         self.tray = None
         self.settings_win = None
 
@@ -172,6 +176,7 @@ class App:
                 f"FreeFlow was updated to revision {self._just_updated}.", "FreeFlow update"))
         if self.cfg.get("auto_update", True) and updater.is_frozen():
             self.root.after(20000, lambda: self.check_for_updates(auto=True))
+            self.root.after(self._update_interval_ms(), self._daily_update_check)
         try:
             self.root.mainloop()
         finally:
@@ -346,19 +351,79 @@ class App:
     # ------------------------------------------------------------------
     # updates
     # ------------------------------------------------------------------
-    def check_for_updates(self, auto: bool = False):
+    def _update_interval_ms(self) -> int:
+        hours = float(self.cfg.get("update_interval_hours", 24) or 24)
+        return int(max(1.0, min(hours, 24 * 14)) * 3600 * 1000)
+
+    def _daily_update_check(self):
+        """Tk timer: check once a day while running (a found update waits for a quiet moment)."""
+        try:
+            if self.cfg.get("auto_update", True) and updater.is_frozen():
+                self.check_for_updates(auto=True, daily=True)
+        finally:
+            self.root.after(self._update_interval_ms(), self._daily_update_check)
+
+    def _key_observed(self, vk: int, t: float):
+        self._last_key_t = t
+        self.editwatch.key_pressed(vk, t)
+
+    def _quiet(self) -> bool:
+        """Nothing is going on that a restart would disturb: no dictation for 10 minutes, no typing for
+        5 minutes, no settings window, no game in front."""
+        now = time.monotonic()
+        if self.state != "idle" or self.pending or self.settings_win is not None:
+            return False
+        if now - self._last_dictation_t < 600 or now - self._last_key_t < 300:
+            return False
+        try:
+            if (foreground_window_info()[0] or "").lower() in self._game_apps():
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _restart_for_update(self):
+        rev = self._restart_pending
+        self._restart_pending = 0
+        log.info("Restarting for update r%s", rev)
+        self.ui(self.tray.notify, "Installing the update and restarting FreeFlow…", "FreeFlow update")
+        time.sleep(1.5)
+        updater.relaunch(["--restart"])
+
+    def _maybe_restart_for_update(self):
+        """Controller idle tick: a downloaded update is installed once the PC has been quiet a while."""
+        if not self._restart_pending:
+            return
+        now = time.monotonic()
+        if now - self._last_restart_check < 30:
+            return
+        self._last_restart_check = now
+        if self._quiet():
+            threading.Thread(target=self._restart_for_update, name="update-restart", daemon=True).start()
+
+    def check_for_updates(self, auto: bool = False, daily: bool = False):
         """Download the latest code update from GitHub; stage it and restart if it is newer.
-        Runs in a background thread; results go to the tray (and the settings window if open)."""
+        Runs in a background thread; results go to the tray (and the settings window if open).
+        daily: the restart waits for a quiet moment instead of happening right away."""
         if getattr(self, "_update_thread", None) and self._update_thread.is_alive():
             return
 
         def work():
             res = updater.check_and_apply(self.cfg.get("update_url"), self.cfg.get("update_page"))
-            log.info("Update check (%s): %s - %s", "auto" if auto else "manual", res.status, res.message)
+            log.info("Update check (%s): %s - %s", "daily" if daily else ("auto" if auto else "manual"),
+                     res.status, res.message)
             self.update_status = res.message
             if self.settings_win is not None:
                 self.ui(self.settings_win.refresh_update_status)
-            if res.status == "updated":
+            if res.status == "updated" and daily:
+                self._restart_pending = res.revision
+                if self._quiet():
+                    self._restart_for_update()
+                else:
+                    log.info("Update r%s downloaded; restart deferred until the PC is quiet", res.revision)
+                    self.ui(self.tray.notify, f"Update r{res.revision} downloaded. FreeFlow restarts the next time "
+                                              "it is not being used.", "FreeFlow update")
+            elif res.status == "updated":
                 if self.state == "recording":
                     self.ui(self.tray.notify, f"{res.message} once you finish dictating.", "FreeFlow update")
                     for _ in range(600):
@@ -511,6 +576,7 @@ class App:
         #    from Discord & co., so nobody in a call hears the chime or the first words.
         self._cancel_pending_unmute()
         self.editwatch.stop()                 # a new dictation: stop watching the previous insertion
+        self._last_dictation_t = time.monotonic()
         t0 = time.monotonic()
         mic_mode = self.cfg.get("mute_mic_mode", "list")
         if mic_mode in ("list", "all"):
@@ -643,6 +709,7 @@ class App:
     def _track_foreground(self):
         """Remember the last foreground window that is not one of ours (polled while idle)."""
         try:
+            self._maybe_restart_for_update()
             fg = focus.user32.GetForegroundWindow()
             if fg and not self._own_window(fg):
                 self._last_foreign_fg = int(fg)

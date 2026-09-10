@@ -72,6 +72,7 @@ DEFAULTS: dict = {
     "learn_from_redictation": True,  # ... also automatically when the same sentence is dictated again
     "correction_replaces": True,     # a spoken correction undoes the text just inserted and inserts the fix
     "learn_from_edits": True,        # watch the text box after an insertion and learn words fixed by typing
+    "update_interval_hours": 24,     # packaged builds: check for updates this often while running (and at start)
     "smart_target": True,            # insert into the window you started in; fall back to the last text box
     "smart_target_text_apps": [],    # extra exe names that always count as having a text box
     "append_space": True,

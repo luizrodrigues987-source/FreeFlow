@@ -107,9 +107,11 @@ if they want sentence structuring.
 
 ## Updating friends' installations
 
-The packaged FreeFlow updates itself from the GitHub release: at start-up it downloads the small
-`FreeFlow-update-latest.zip` (about 70 KB), and when that code is newer than what is installed it stages
-it in `%APPDATA%/FreeFlow/update` and restarts. Friends can also double-click `Update FreeFlow.bat` in
+The packaged FreeFlow updates itself from the GitHub release: at start-up and then once a day
+(`update_interval_hours`) it downloads the small `FreeFlow-update-latest.zip` (about 100 KB), and when that
+code is newer than what is installed it stages it in `%APPDATA%/FreeFlow/update` and restarts. A restart
+found by the daily check waits for a quiet moment: no dictation for ten minutes, no typing for five, no
+settings window, no game in front. Friends can also double-click `Update FreeFlow.bat` in
 their FreeFlow folder, use the tray menu's "Check for updates", or the button in Settings > About
 (where the automatic check can be switched off). A broken update is set aside automatically and the
 built-in code runs.

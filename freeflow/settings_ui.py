@@ -521,7 +521,8 @@ class SettingsWindow(tk.Toplevel):
         ttk.Label(f, text=f"Installed code revision: {CODE_REVISION}").grid(row=r, column=0, sticky="w"); r += 1
         ubox = ttk.Frame(f); ubox.grid(row=r, column=0, sticky="w", pady=4)
         ttk.Button(ubox, text="Check for updates now", command=lambda: self.app.check_for_updates(auto=False)).pack(side="left")
-        ttk.Checkbutton(ubox, text="Check for updates when FreeFlow starts", variable=self._var("auto_update", bool)).pack(side="left", padx=12)
+        ttk.Checkbutton(ubox, text="Check for updates at start and once a day (a restart waits until you are not using the PC)",
+                        variable=self._var("auto_update", bool)).pack(side="left", padx=12)
         r += 1
         self.update_label = ttk.Label(f, text=getattr(self.app, "update_status", "") or "", foreground="#888", wraplength=640, justify="left")
         self.update_label.grid(row=r, column=0, sticky="w"); r += 1
