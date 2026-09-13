@@ -148,6 +148,20 @@ def too_short_to_polish(text: str) -> bool:
 # --------------------------------------------------------------------------
 # Local (Ollama)
 # --------------------------------------------------------------------------
+def start_hidden_console(cmd: list) -> subprocess.Popen:
+    """Start a console program in a NEW but HIDDEN console.
+
+    Not CREATE_NO_WINDOW / DETACHED_PROCESS: a process started that way has no console at all, so
+    every console child it spawns (Ollama's model runner, llama-server.exe) creates its own - visible -
+    console window.  A hidden console is inherited by the children and nothing ever pops up."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0                                  # SW_HIDE
+    flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(cmd, creationflags=flags, startupinfo=si, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+
+
 def find_ollama_exe() -> Optional[str]:
     exe = shutil.which("ollama")
     if exe:
@@ -272,16 +286,15 @@ class LocalLLM:
     def model(self) -> str:
         return self.cfg.get("ollama_model") or LOCAL_MODELS[0]
 
-    def ensure_server(self, wait: float = 10.0) -> bool:
+    def ensure_server(self, wait: float = 30.0) -> bool:
         if ollama_version(self.url):
             return True
         exe = find_ollama_exe()
         if not exe:
             return False
         try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-            subprocess.Popen([exe, "serve"], creationflags=flags, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            start_hidden_console([exe, "serve"])
+            log.info("Started ollama serve (hidden console)")
         except Exception as e:
             log.warning("could not start ollama serve: %s", e)
             return False

@@ -99,6 +99,7 @@ class App:
         self._last_key_t = 0.0            # monotonic time of the last real key press (any app)
         self._last_dictation_t = 0.0      # monotonic time of the last recording start / stop
         self._restart_pending = 0         # revision of a downloaded update waiting for a quiet moment
+        self._llm_retries = 0             # Ollama not up yet: how often set-up has been retried
         self._last_restart_check = 0.0
         self.tray = None
         self.settings_win = None
@@ -332,9 +333,14 @@ class App:
             if self.settings_win is not None:
                 self.ui(self.settings_win.refresh_engine_status)
             if self.local_llm.ready:
+                self._llm_retries = 0
                 log.info("Sentence structuring active (%s)", self.local_llm.model)
             else:
                 log.info("Sentence structuring unavailable: %s", self.local_llm.status)
+                # Ollama often comes up a little after FreeFlow at sign-in: keep trying for a while
+                if self._llm_retries < 15 and "not installed" in (self.local_llm.status or ""):
+                    self._llm_retries += 1
+                    self.ui(lambda: self.root.after(60000, self._setup_local_llm))
         self.local_llm.setup_async(notify=lambda msg: self.ui(self.tray.notify, msg, "FreeFlow"), on_done=done)
 
     def toggle_enabled(self):

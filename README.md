@@ -158,6 +158,10 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 - The speaker mute only touches the *default* playback device, so virtual cables and voice changers
   keep working.
 - Everything runs locally unless you switch on a cloud engine or AI polish in Settings.
+- When Ollama is installed but not running yet, FreeFlow starts `ollama serve` itself in a hidden console
+  (never with "no console": Ollama's model runner would then open a console window every time a model
+  loads) and keeps retrying for a quarter of an hour after sign-in, since the Ollama tray app usually
+  starts a little later than FreeFlow.
 - The keyboard hook runs on a high-priority thread and re-installs itself when Windows called it late
   (a busy game can make Windows drop slow hooks without notice); such late calls are logged as warnings,
   and so is any dictation start that took longer than 0.4 s, with a breakdown of where the time went.
