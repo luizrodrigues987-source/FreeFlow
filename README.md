@@ -71,6 +71,14 @@ into whatever app has the cursor.
   monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text. It
   checks its own window once a second and puts itself back when something hid or moved it ("Show
   desktop" minimising it, a display change, another window taking the top spot); each repair is logged.
+- **Knows the window's names**: when a dictation starts, FreeFlow reads the text of the window that
+  will receive it through Windows accessibility (locally; nothing is stored or sent) and picks out the
+  names on it: the contact on a HubSpot page, the person an e-mail is addressed to, names in the title,
+  the parts of e-mail addresses. Whisper is told to expect them, and a name it still gets wrong is
+  replaced by the one on the page that sounds like it ("Myron" -> "Miren"). Settings > Transcription
+  switches it off.
+- **Self-corrections**: "today is Wednesday, I mean Tuesday" comes out as "Today is Tuesday." (local
+  model; "actually" and "I mean" used as ordinary phrases are left alone).
 - **Learns how you speak**: corrections become rules. Right after a bad dictation, hold the hotkey and
   say "correction" followed by the right words ("correction: start localhost"): the wrong text is taken
   back (undo, if you have not typed since), the fix is inserted, and "loco host -> localhost" is learned.

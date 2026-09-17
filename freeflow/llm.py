@@ -43,6 +43,7 @@ Rules:
 - Keep closing words and short final sentences too (thanks, please, okay, is that possible, let me know).
 - Add punctuation and capitalisation. Split run-on speech into proper sentences. For long text use paragraphs (blank line between them).
 - Remove filler sounds (um, uh, hmm), stutters, immediately repeated words and false starts; keep the corrected version.
+- When the speaker corrects themselves ("X, I mean Y", "X, no wait, Y", "X, actually Y", "X, sorry, Y", "X, make that Y", "scratch that, Y"), write only the corrected version Y and drop X and the correction words. "I mean" or "actually" used as ordinary phrases ("I actually like it", "I mean, it's fine") stay.
 - Apply spoken formatting words: "new line", "new paragraph", "bullet points", "numbered list", "comma", "period", "question mark".
 - Keep any line breaks that are already in the text exactly where they are.
 - Lists: when the user clearly dictates several items as a list (announced by "a few things", "the following", "here's what we need", or spelled out as "one ... two ... three" / "first ... second ..."), write a short intro line ending with a colon followed by one item per line: "1. " items when they were numbered, "- " bullets otherwise. Short enumerations inside a normal sentence ("milk, eggs and bread") stay a sentence.
@@ -54,6 +55,15 @@ Example output: I think we should move the meeting to Thursday. Thursday afterno
 
 Example input: hey what time is the game tonight
 Example output: Hey, what time is the game tonight?
+
+Example input: oh today is wednesday oh i mean it's tuesday actually can we meet at three no wait at four
+Example output: Today is Tuesday. Can we meet at four?
+
+Example input: send the invoice to mark sorry to marc by friday
+Example output: Send the invoice to Marc by Friday.
+
+Example input: we closed two deals no wait three deals in august and i think we should scratch that we need to ship it today
+Example output: We closed three deals in August. We need to ship it today.
 
 Example input: we need milk eggs and bread new line and call the plumber
 Example output: We need milk, eggs and bread.
@@ -97,8 +107,10 @@ def _tidy_output(text: str, out: str) -> str:
         out = out.translate(_TYPOGRAPHY)      # models love curly quotes; keep plain ones like the input
     if not out:
         return text
+    # a self-correction ("wednesday, I mean tuesday") legitimately drops words: loosen the checks then
+    corrects = bool(_SELF_CORRECTION.search(text))
     ratio = len(out) / max(1, len(text))
-    if ratio < 0.45 or ratio > 1.9:
+    if ratio < (0.25 if corrects else 0.45) or ratio > 1.9:
         log.warning("Polish output length ratio %.2f looks wrong; keeping the original text", ratio)
         return text
     # the model must not lose the content: compare the meaningful words
@@ -107,7 +119,7 @@ def _tidy_output(text: str, out: str) -> str:
     src, dst = words(text), words(out)
     if src:
         missing = len(src - dst) / len(src)
-        if missing > 0.25:
+        if missing > (0.7 if corrects else 0.25):
             log.warning("Polish output lost %.0f%% of the content words; keeping the original text", missing * 100)
             return text
     # the model must not change who is speaking ("you are being useless" once came back as "I am being useless")
@@ -139,6 +151,8 @@ def _persons(s: str) -> set:
 
 
 _FILLER_WORDS = {"like", "yeah", "okay", "just", "really", "actually", "basically", "literally", "gonna", "kind", "sort"}
+_SELF_CORRECTION = re.compile(r"\b(i mean|i meant|no wait|wait no|scratch that|sorry|make that|rather|correction|"
+                              r"let me rephrase|actually)\b", re.IGNORECASE)
 
 
 def too_short_to_polish(text: str) -> bool:

@@ -263,6 +263,8 @@ class SettingsWindow(tk.Toplevel):
         ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="we", pady=10); r += 1
         self._label(f, "Vocabulary", r)
         self._text(f, "vocabulary", ", ".join(self.cfg.get("vocabulary") or []), r, height=3); r += 1
+        self._check(f, "window_context", "Use names from the window in front (the contact on a CRM page, an e-mail's "
+                                         "recipient) so they are spelled right", r); r += 1
         ttk.Label(f, text="Names, jargon and words that are often misheard, separated by commas. They are given to the model as hints.", foreground="#888", wraplength=520).grid(row=r, column=1, sticky="w"); r += 1
         self.engine_status = ttk.Label(f, text="", foreground="#888")
         self.engine_status.grid(row=r, column=0, columnspan=2, sticky="w", pady=(8, 0)); r += 1

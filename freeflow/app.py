@@ -31,6 +31,7 @@ from . import gamevocab
 from .inject import inject_game_chat, inject_text, press_enter, send_backspaces, send_undo, wait_modifiers_released
 from .learning import Learner, sentence_similarity, split_correction, words as text_words
 from .editwatch import EditWatcher
+from . import context as wincontext
 from .postprocess import capitalize_first
 from .llm import LocalLLM, PolishError, polish, resolve_mode, too_short_to_polish
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
@@ -134,7 +135,7 @@ class App:
             log.debug("sv_ttk unavailable: %s", e)
         ensure_icon_file(autostart.icon_path())
         try:
-            self.root.iconbitmap(autostart.icon_path())
+            self.root.iconbitmap(default=autostart.icon_path())     # default: every window of the app
         except Exception:
             pass
 
@@ -593,6 +594,10 @@ class App:
         if self.overlay and target.get("hwnd") != self._followed:
             self._followed = int(target.get("hwnd") or 0)
             self.ui(self.overlay.follow, self._followed)     # indicator on the monitor that gets the text
+        if (self.cfg.get("window_context", True) and target.get("hwnd")
+                and (target.get("exe") or "").lower() not in self._game_apps()):
+            # names on the page (contact, e-mail recipient ...) are read while the user talks
+            target["context"] = wincontext.capture_async(target["hwnd"], target.get("title", ""), target.get("exe", ""))
         t_target = time.monotonic()
         try:
             self.recorder.start(self.cfg.get("input_device") or None)
@@ -837,6 +842,13 @@ class App:
         learning = bool(self.cfg.get("learning", True))
         if learning:
             vocab = self.learner.vocabulary() + vocab      # words learned from corrections, then the user's list
+        ctx = None
+        fut = (job.target or {}).get("context")
+        if fut is not None:
+            ctx = fut.result(1.0)                          # the page read started with the recording
+            if ctx and ctx.names:
+                vocab = ctx.names[:20] + vocab             # names from the window in front
+                log.info("Window context: %d names from %s (%s...)", len(ctx.names), ctx.source, ", ".join(ctx.names[:4]))
         game_vocab = job.app_exe.lower() in self._game_apps() and bool(self.cfg.get("game_vocab", True))
         if game_vocab:
             # League jargon, items and champion names for Whisper; the user's own words come last (they count most)
@@ -857,6 +869,11 @@ class App:
                 return
         elif text and learning:
             text = self.learner.apply(text)
+        if text and ctx is not None and ctx.names:
+            fixed = ctx.correct(text)
+            if fixed != text:
+                log.info("Window context: %s", "; ".join(f"{a} -> {b}" for a, b in ctx.fixed))
+                text = fixed
         if text and game_vocab:
             text = gamevocab.correct_game_text(text)
         if not text:
@@ -1085,8 +1102,13 @@ def build_whisper_prompt(vocab: list, punctuate: bool = True) -> Optional[str]:
 
 
 def _set_dpi_awareness():
-    """Crisp rendering and real pixel coordinates on scaled displays."""
+    """Crisp rendering and real pixel coordinates on scaled displays; our own taskbar identity (the
+    taskbar would otherwise group our windows under python.exe and show its icon)."""
     import ctypes
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeFlow.Dictation")
+    except Exception:
+        pass
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # system DPI aware
     except Exception:
