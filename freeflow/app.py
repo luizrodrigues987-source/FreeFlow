@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
+from datetime import datetime, timedelta
 import subprocess
 import sys
 import threading
@@ -178,7 +180,7 @@ class App:
                 f"FreeFlow was updated to revision {self._just_updated}.", "FreeFlow update"))
         if self.cfg.get("auto_update", True) and updater.is_frozen():
             self.root.after(20000, lambda: self.check_for_updates(auto=True))
-            self.root.after(self._update_interval_ms(), self._daily_update_check)
+            self._update_timer = self.root.after(self._next_update_delay_ms(), self._daily_update_check)
         try:
             self.root.mainloop()
         finally:
@@ -362,13 +364,35 @@ class App:
         hours = float(self.cfg.get("update_interval_hours", 24) or 24)
         return int(max(1.0, min(hours, 24 * 14)) * 3600 * 1000)
 
+    def _next_update_delay_ms(self) -> int:
+        """Until the daily check: the configured time of day (update_time, e.g. 05:00), else the interval."""
+        ms = ms_until_time_of_day(self.cfg.get("update_time"))
+        if ms is None:
+            ms = self._update_interval_ms()
+            log.info("Next update check in %.1f h", ms / 3600000)
+        else:
+            log.info("Next update check at %s (in %.1f h)", self.cfg.get("update_time"), ms / 3600000)
+        return ms
+
     def _daily_update_check(self):
         """Tk timer: check once a day while running (a found update waits for a quiet moment)."""
         try:
             if self.cfg.get("auto_update", True) and updater.is_frozen():
                 self.check_for_updates(auto=True, daily=True)
         finally:
-            self.root.after(self._update_interval_ms(), self._daily_update_check)
+            self._update_timer = self.root.after(self._next_update_delay_ms(), self._daily_update_check)
+
+    def _reschedule_update_check(self):
+        """After the settings changed: the daily timer follows the new time."""
+        timer = getattr(self, "_update_timer", None)
+        if timer is not None:
+            try:
+                self.root.after_cancel(timer)
+            except Exception:
+                pass
+            self._update_timer = None
+        if self.cfg.get("auto_update", True) and updater.is_frozen():
+            self._update_timer = self.root.after(self._next_update_delay_ms(), self._daily_update_check)
 
     def _key_observed(self, vk: int, t: float):
         self._last_key_t = t
@@ -1074,6 +1098,7 @@ class App:
             log.warning("autostart update failed: %s", e)
         self._load_engine()
         self._setup_local_llm()
+        self._reschedule_update_check()
         self.tray.refresh_title()
 
     def open_settings(self, tab: Optional[str] = None):
@@ -1089,6 +1114,22 @@ class App:
 
 
 PUNCTUATION_PROMPT = "Okay, so here's the plan. We'll finish this today, right? Yes, I think so."
+
+
+def ms_until_time_of_day(text, now: Optional[datetime] = None) -> Optional[int]:
+    """Milliseconds until the next occurrence of a "HH:MM" time of day (local), or None if the text is
+    not a time.  A time that is right now counts as tomorrow."""
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(text or ""))
+    if not m:
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= hh < 24 and 0 <= mm < 60):
+        return None
+    now = now or datetime.now()
+    target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return int((target - now).total_seconds() * 1000) + 1000
 
 
 def build_whisper_prompt(vocab: list, punctuate: bool = True) -> Optional[str]:

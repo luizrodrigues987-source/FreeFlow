@@ -56,9 +56,9 @@ Everything runs on your own PC. Nothing is sent anywhere unless you deliberately
 (OpenAI / Groq / Claude) in Settings.
 
 Updates
-FreeFlow checks GitHub for a newer version when it starts and once a day while running, and installs it
-by itself; the restart that installs it waits until you are not dictating, typing or gaming (switch this off
-in Settings > About). You can also double-click "Update FreeFlow.bat" in this folder, or use the tray
+FreeFlow checks GitHub for a newer version when it starts and every morning at 5:00 while running, and
+installs it by itself; the restart that installs it waits until you are not dictating, typing or gaming
+(change the time or switch this off in Settings > About). You can also double-click "Update FreeFlow.bat" in this folder, or use the tray
 icon's "Check for updates". Updates are small (about 100 KB); a new major version is announced with a link.
 
 Notes

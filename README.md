@@ -117,9 +117,10 @@ if they want sentence structuring.
 
 ## Updating friends' installations
 
-The packaged FreeFlow updates itself from the GitHub release: at start-up and then once a day
-(`update_interval_hours`) it downloads the small `FreeFlow-update-latest.zip` (about 100 KB), and when that
-code is newer than what is installed it stages it in `%APPDATA%/FreeFlow/update` and restarts. A restart
+The packaged FreeFlow updates itself from the GitHub release: at start-up and then every day at 05:00
+(`update_time`; `update_interval_hours` applies when the time is left empty) it downloads the small
+`FreeFlow-update-latest.zip` (about 120 KB), and when that code is newer than what is installed it stages
+it in `%APPDATA%/FreeFlow/update` and restarts. A PC that was asleep at that time checks as soon as it wakes. A restart
 found by the daily check waits for a quiet moment: no dictation for ten minutes, no typing for five, no
 settings window, no game in front. Friends can also double-click `Update FreeFlow.bat` in
 their FreeFlow folder, use the tray menu's "Check for updates", or the button in Settings > About

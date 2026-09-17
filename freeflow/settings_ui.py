@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import threading
+import re
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -523,8 +524,10 @@ class SettingsWindow(tk.Toplevel):
         ttk.Label(f, text=f"Installed code revision: {CODE_REVISION}").grid(row=r, column=0, sticky="w"); r += 1
         ubox = ttk.Frame(f); ubox.grid(row=r, column=0, sticky="w", pady=4)
         ttk.Button(ubox, text="Check for updates now", command=lambda: self.app.check_for_updates(auto=False)).pack(side="left")
-        ttk.Checkbutton(ubox, text="Check for updates at start and once a day (a restart waits until you are not using the PC)",
-                        variable=self._var("auto_update", bool)).pack(side="left", padx=12)
+        ttk.Checkbutton(ubox, text="Check for updates at start and every day at",
+                        variable=self._var("auto_update", bool)).pack(side="left", padx=(12, 4))
+        ttk.Entry(ubox, textvariable=self._var("update_time"), width=6).pack(side="left")
+        ttk.Label(ubox, text="(a restart waits until you are not using the PC)", foreground="#888").pack(side="left", padx=6)
         r += 1
         self.update_label = ttk.Label(f, text=getattr(self.app, "update_status", "") or "", foreground="#888", wraplength=640, justify="left")
         self.update_label.grid(row=r, column=0, sticky="w"); r += 1
@@ -714,6 +717,13 @@ class SettingsWindow(tk.Toplevel):
         except ValueError as e:
             messagebox.showerror("Settings", str(e), parent=self)
             return False
+        data["update_time"] = str(data.get("update_time", "")).strip()
+        if data["update_time"]:
+            m = re.match(r"^(\d{1,2}):(\d{2})$", data["update_time"])
+            if not m or not (0 <= int(m.group(1)) < 24 and 0 <= int(m.group(2)) < 60):
+                messagebox.showerror("Settings", "The update time must look like 05:00 (24-hour clock), or be empty.", parent=self)
+                return False
+            data["update_time"] = f"{int(m.group(1)):02d}:{m.group(2)}"
         if data.get("engine") == "openai" and not data.get("openai_api_key"):
             messagebox.showwarning("Settings", "The OpenAI engine needs an API key.", parent=self)
             return False
