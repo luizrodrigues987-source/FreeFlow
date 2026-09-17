@@ -71,11 +71,13 @@ into whatever app has the cursor.
   monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text. It
   checks its own window once a second and puts itself back when something hid or moved it ("Show
   desktop" minimising it, a display change, another window taking the top spot); each repair is logged.
-- **Knows the window's names**: when a dictation starts, FreeFlow reads the text of the window that
-  will receive it through Windows accessibility (locally; nothing is stored or sent) and picks out the
-  names on it: the contact on a HubSpot page, the person an e-mail is addressed to, names in the title,
-  the parts of e-mail addresses. Whisper is told to expect them, and a name it still gets wrong is
-  replaced by the one on the page that sounds like it ("Myron" -> "Miren"). Settings > Transcription
+- **Knows what the window is about**: when a dictation starts, FreeFlow reads the text of the window
+  that will receive it through Windows accessibility (locally; nothing is stored or sent) and picks out
+  the names on it (the contact on a HubSpot page, the person an e-mail is addressed to, names in the
+  title, the parts of e-mail addresses) and its topic words (distinctive words that recur on the page,
+  such as "pavers" or "stucco"; everyday English is ignored with the help of a 5,000-word frequency
+  list). Whisper is told to expect them, and a word it still gets wrong is replaced by the one on the
+  page that sounds like it ("Myron" -> "Miren", "papers" -> "pavers"). Settings > Transcription
   switches it off.
 - **Self-corrections**: "today is Wednesday, I mean Tuesday" comes out as "Today is Tuesday." (local
   model; "actually" and "I mean" used as ordinary phrases are left alone).
@@ -153,6 +155,7 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/gamevocab.py` | League of Legends vocabulary for game chat (Whisper prompt, corrections, champion names) |
 | `freeflow/learning.py` | learned corrections: "correction ..." command, re-dictations, History edits -> rules + Whisper vocabulary |
 | `freeflow/editwatch.py` | watches the text box after an insertion (UI Automation) and learns words fixed by typing |
+| `freeflow/context.py`, `commonwords.py` | names and topic words of the window in front for Whisper's prompt and sound-alike fixes |
 | `freeflow/llm.py` | optional Claude / OpenAI polish |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |

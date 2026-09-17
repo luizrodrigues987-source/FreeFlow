@@ -846,9 +846,10 @@ class App:
         fut = (job.target or {}).get("context")
         if fut is not None:
             ctx = fut.result(1.0)                          # the page read started with the recording
-            if ctx and ctx.names:
-                vocab = ctx.names[:20] + vocab             # names from the window in front
-                log.info("Window context: %d names from %s (%s...)", len(ctx.names), ctx.source, ", ".join(ctx.names[:4]))
+            if ctx and (ctx.names or ctx.terms):
+                vocab = ctx.vocabulary() + vocab           # topic words and names from the window in front
+                log.info("Window context: %d names, %d topic words from %s (%s...)", len(ctx.names), len(ctx.terms),
+                         ctx.source, ", ".join((ctx.names + ctx.terms)[:5]))
         game_vocab = job.app_exe.lower() in self._game_apps() and bool(self.cfg.get("game_vocab", True))
         if game_vocab:
             # League jargon, items and champion names for Whisper; the user's own words come last (they count most)
@@ -869,7 +870,7 @@ class App:
                 return
         elif text and learning:
             text = self.learner.apply(text)
-        if text and ctx is not None and ctx.names:
+        if text and ctx is not None and (ctx.names or ctx.terms):
             fixed = ctx.correct(text)
             if fixed != text:
                 log.info("Window context: %s", "; ".join(f"{a} -> {b}" for a, b in ctx.fixed))
