@@ -82,7 +82,10 @@ class Engine:
     def describe(self) -> str:
         return self.name
 
-    def transcribe(self, audio: np.ndarray, language: str = "en", prompt: Optional[str] = None) -> str:
+    def transcribe(self, audio: np.ndarray, language: str = "en", prompt: Optional[str] = None,
+                   details: Optional[dict] = None) -> str:
+        """The text.  An engine that knows more puts it into `details`: "words" = [{"word", "prob",
+        "start", "end"}] - how sure the model was about each word and where it is in the audio."""
         raise NotImplementedError
 
 
@@ -97,6 +100,7 @@ class LocalWhisperEngine(Engine):
         self.compute_type = compute_type
         self.beam_size = max(1, int(beam_size or 5))
         self._model = None
+        self._word_times = True
         self.device_used = ""
         self.compute_used = ""
         self._lock = threading.Lock()
@@ -154,7 +158,8 @@ class LocalWhisperEngine(Engine):
     def _auto_language(self) -> bool:
         return not self.model_name.endswith(".en")
 
-    def transcribe(self, audio: np.ndarray, language: str = "en", prompt: Optional[str] = None) -> str:
+    def transcribe(self, audio: np.ndarray, language: str = "en", prompt: Optional[str] = None,
+                   details: Optional[dict] = None) -> str:
         self.ready.wait()
         if self.error or self._model is None:
             raise EngineError(self.error or "model not loaded")
@@ -162,14 +167,36 @@ class LocalWhisperEngine(Engine):
         if self.model_name.endswith(".en"):
             lang = "en"
         with self._lock:
-            segments, info = self._model.transcribe(
-                audio, language=lang, beam_size=self.beam_size, vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 400, "speech_pad_ms": 300},
-                initial_prompt=prompt or None, condition_on_previous_text=False,
-            )
-            parts = [s.text.strip() for s in segments]
+            try:
+                parts, words = self._run(audio, lang, prompt, self._word_times)
+            except Exception as e:
+                if not self._word_times:
+                    raise
+                # never let the extra (word probabilities) cost a dictation: go on without it
+                log.warning("Transcription with word timing failed (%s: %s); continuing without it", type(e).__name__, e)
+                self._word_times = False
+                parts, words = self._run(audio, lang, prompt, False)
+        if details is not None:
+            details["words"] = words
         text = " ".join(p for p in parts if p)
         return text.strip()
+
+
+    def _run(self, audio, lang, prompt, word_times: bool):
+        # word_timestamps also yields the model's probability per word (costs a few milliseconds):
+        # the window context only touches words the model itself was unsure about
+        segments, _info = self._model.transcribe(
+            audio, language=lang, beam_size=self.beam_size, vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 400, "speech_pad_ms": 300},
+            initial_prompt=prompt or None, condition_on_previous_text=False, word_timestamps=word_times,
+        )
+        parts, words = [], []
+        for seg in segments:
+            parts.append(seg.text.strip())
+            for w in (getattr(seg, "words", None) or []):
+                words.append({"word": w.word.strip(), "prob": float(w.probability),
+                              "start": float(w.start), "end": float(w.end)})
+        return parts, words
 
 
 class HttpWhisperEngine(Engine):
@@ -185,7 +212,8 @@ class HttpWhisperEngine(Engine):
     def describe(self) -> str:
         return f"{self.name} {self.model}"
 
-    def transcribe(self, audio: np.ndarray, language: str = "en", prompt: Optional[str] = None) -> str:
+    def transcribe(self, audio: np.ndarray, language: str = "en", prompt: Optional[str] = None,
+                   details: Optional[dict] = None) -> str:
         import requests
         if not self.api_key:
             raise EngineError(f"No API key configured for {self.name}")

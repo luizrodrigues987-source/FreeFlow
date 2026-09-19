@@ -86,6 +86,10 @@ class PolishError(Exception):
     pass
 
 
+class PolishSlow(PolishError):
+    """The model did not start answering in time (it was not in memory): insert the text as it is."""
+
+
 def build_system(style: str, app_context: str = "", local: bool = False) -> str:
     parts = [LOCAL_SYSTEM_PROMPT if local else SYSTEM_PROMPT, STYLE_HINTS.get(style, STYLE_HINTS["clean"])]
     if app_context:
@@ -256,30 +260,69 @@ def ollama_pull(url: str, model: str, progress: Optional[Callable[[str], None]] 
                 last = status
 
 
-def polish_with_ollama(text: str, url: str, model: str, style: str = "clean", app_context: str = "",
-                       timeout: float = 25.0, keep_alive: str = "15m") -> str:
-    import requests
+def keep_alive_value(value):
+    """Ollama takes a number of seconds (negative = never unload) or a duration string such as "15m"."""
+    s = str("" if value is None else value).strip()
+    if re.fullmatch(r"-?\d+", s):
+        return int(s)
+    return s or "15m"
+
+
+def _chat_body(text: str, model: str, style: str, app_context: str, keep_alive, num_predict: int, stream: bool) -> dict:
+    """One place for the request options: a request with another num_ctx makes Ollama load the model
+    again (seconds), so the warm-up and the real clean-up must ask for exactly the same thing."""
     body = {
         "model": model,
         "messages": [{"role": "system", "content": build_system(style, app_context, local=True)},
                      {"role": "user", "content": text}],
-        "stream": False,
-        "keep_alive": keep_alive,
-        "options": {"temperature": 0.1, "num_predict": max(256, len(text) // 2 + 160), "num_ctx": 4096},
+        "stream": stream,
+        "keep_alive": keep_alive_value(keep_alive),
+        "options": {"temperature": 0.1, "num_predict": num_predict, "num_ctx": 4096},
     }
     if model.lower().startswith(_THINKING_MODELS):
         body["think"] = False
+    return body
+
+
+def polish_with_ollama(text: str, url: str, model: str, style: str = "clean", app_context: str = "",
+                       timeout: float = 25.0, keep_alive="15m", first_token_timeout: Optional[float] = None) -> str:
+    """first_token_timeout: give up (PolishSlow) when the model has not started to answer by then - it is
+    being loaded into memory, which takes 5-20 s, and a dictation should not wait for that."""
+    import requests
+    body = _chat_body(text, model, style, app_context, keep_alive, max(256, len(text) // 2 + 160), stream=True)
+    parts: list[str] = []
+    started = False
+    t0 = time.monotonic()
     try:
-        r = _http().post(url.rstrip("/") + "/api/chat", json=body, timeout=timeout)
+        # the answer is streamed: Ollama sends nothing (not even headers) before the first token, so the
+        # read time-out is the wait for the first token, and afterwards the longest gap between tokens
+        with _http().post(url.rstrip("/") + "/api/chat", json=body, stream=True,
+                          timeout=(3.0, first_token_timeout or timeout)) as r:
+            if r.status_code != 200:
+                raise PolishError(f"Ollama error {r.status_code}: {r.text[:160]}")
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                started = True
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("error"):
+                    raise PolishError(f"Ollama error: {str(d['error'])[:160]}")
+                parts.append((d.get("message") or {}).get("content") or "")
+                if d.get("done"):
+                    break
+                if time.monotonic() - t0 > timeout:
+                    raise PolishError("Local model took too long")
     except requests.RequestException as e:
+        timed_out = isinstance(e, requests.Timeout) or "timed out" in str(e).lower()
+        if first_token_timeout and not started and timed_out:
+            raise PolishSlow(f"no answer within {first_token_timeout:.1f} s (the text model is still loading)")
         raise PolishError(f"Local model unreachable ({e.__class__.__name__})")
-    if r.status_code != 200:
-        raise PolishError(f"Ollama error {r.status_code}: {r.text[:160]}")
-    try:
-        out = r.json()["message"]["content"]
-    except Exception:
+    if not started:
         raise PolishError("Unexpected Ollama response")
-    return _tidy_output(text, out)
+    return _tidy_output(text, "".join(parts))
 
 
 class LocalLLM:
@@ -291,6 +334,8 @@ class LocalLLM:
         self.status = "not checked"
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._loader: Optional[threading.Thread] = None
+        self._seen_loaded = 0.0
 
     @property
     def url(self) -> str:
@@ -357,22 +402,71 @@ class LocalLLM:
                         pass
 
     @property
-    def keep_alive(self) -> str:
-        return str(self.cfg.get("ollama_keep_alive") or "15m")
+    def keep_alive(self):
+        """-1 = the model stays in memory (a reload costs 5-20 s, and dictations are often hours apart)."""
+        if self.cfg.get("llm_keep_loaded", True):
+            return -1
+        return keep_alive_value(self.cfg.get("ollama_keep_alive") or "15m")
 
-    def warm_up(self):
+    def warm_up(self) -> bool:
+        """Load the model with exactly the options of a real clean-up and let it read the instructions
+        once (Ollama keeps them cached), so the first dictation is as fast as the following ones."""
         try:
-            body = {"model": self.model, "messages": [{"role": "user", "content": "Hi"}],
-                    "stream": False, "keep_alive": self.keep_alive, "options": {"num_predict": 1}}
-            if self.model.lower().startswith(_THINKING_MODELS):
-                body["think"] = False
-            _http().post(self.url + "/api/chat", json=body, timeout=120)
+            body = _chat_body("Hi there", self.model, self.cfg.get("polish_style", "clean"), "", self.keep_alive,
+                              num_predict=1, stream=False)
+            r = _http().post(self.url + "/api/chat", json=body, timeout=180)
+            if r.status_code != 200:
+                log.info("Text model warm-up failed: %s %s", r.status_code, r.text[:120])
+            return r.status_code == 200
         except Exception as e:
-            log.debug("warm-up failed: %s", e)
+            log.info("Text model warm-up failed: %s", e)
+            return False
+
+    def loaded(self) -> Optional[bool]:
+        """Is the model in memory right now?  None when Ollama does not answer."""
+        try:
+            r = _http().get(self.url + "/api/ps", timeout=2)
+            if r.status_code != 200:
+                return None
+            return _model_matches(self.model, [m.get("name", "") for m in r.json().get("models", [])])
+        except Exception:
+            return None
+
+    def ensure_loaded_async(self, reason: str = ""):
+        """Load the model in the background when it is not in memory (start of a recording, idle check,
+        after a clean-up that gave up waiting): by the time the text is ready, so is the model."""
+        if not self.ready or (self._loader and self._loader.is_alive()):
+            return
+        if time.monotonic() - self._seen_loaded < 120:
+            return                           # it was in memory a moment ago, and it is never unloaded on a timer
+
+        def work():
+            state = self.loaded()
+            if state:
+                self._seen_loaded = time.monotonic()
+            if state is False:
+                t0 = time.monotonic()
+                if self.warm_up():
+                    log.info("Text model loaded into memory in %.1f s%s", time.monotonic() - t0,
+                             f" ({reason})" if reason else "")
+        self._loader = threading.Thread(target=work, name="llm-load", daemon=True)
+        self._loader.start()
 
     def polish(self, text: str, style: str, app_context: str) -> str:
-        return polish_with_ollama(text, self.url, self.model, style, app_context,
-                                  timeout=float(self.cfg.get("polish_timeout") or 25), keep_alive=self.keep_alive)
+        first = float(self.cfg.get("polish_first_token_s") or 0)
+        if first > 0:
+            first += len(text) / 400.0          # a long text takes the model longer to read
+        try:
+            out = polish_with_ollama(text, self.url, self.model, style, app_context,
+                                     timeout=float(self.cfg.get("polish_timeout") or 25), keep_alive=self.keep_alive,
+                                     first_token_timeout=first or None)
+            self._seen_loaded = time.monotonic()
+            return out
+        except PolishSlow:
+            # our request is gone, and with it Ollama may drop the load it started: finish it for next time
+            self._seen_loaded = 0.0
+            self.ensure_loaded_async("after a clean-up that could not wait")
+            raise
 
 
 # --------------------------------------------------------------------------

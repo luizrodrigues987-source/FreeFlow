@@ -74,7 +74,7 @@ DEFAULTS: dict = {
     "learn_from_edits": True,        # watch the text box after an insertion and learn words fixed by typing
     "update_interval_hours": 24,     # packaged builds: fallback interval when update_time is empty
     "update_time": "05:00",          # packaged builds: check for updates every day at this local time (and at start)
-    "window_context": True,          # read names from the window in front (contacts, e-mail recipients) for each dictation
+    "window_context": True,          # window in front as a backup: doubtful words are checked against its names / topic words
     "smart_target": True,            # insert into the window you started in; fall back to the last text box
     "smart_target_text_apps": [],    # extra exe names that always count as having a text box
     "append_space": True,
@@ -88,8 +88,10 @@ DEFAULTS: dict = {
     "polish_style": "clean",         # clean | formal | casual
     "ollama_url": "http://127.0.0.1:11434",   # 127.0.0.1, not localhost: IPv6 fallback costs 2 s per request
     "ollama_model": "qwen2.5:3b",
-    "ollama_keep_alive": "15m",      # how long the text model stays loaded in VRAM after a dictation
+    "llm_keep_loaded": True,         # the text model stays in memory (about 2.5 GB); a reload costs 5-20 s
+    "ollama_keep_alive": "15m",      # with llm_keep_loaded off: how long the model stays loaded after a dictation
     "polish_timeout": 25,
+    "polish_first_token_s": 2.5,     # model not answering by then (it is still loading): insert without AI clean-up; 0 = wait
     "whisper_punctuation_prompt": True,   # nudge Whisper to produce punctuation
     "anthropic_api_key": "",
     "claude_model": "claude-opus-5",

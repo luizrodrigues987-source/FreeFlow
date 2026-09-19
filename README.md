@@ -63,6 +63,12 @@ into whatever app has the cursor.
   On by default when Ollama is installed ("Auto"); Claude or OpenAI can be used instead with an API key.
   Every result is checked before use: a rewrite that changes the length a lot, drops content words or
   changes who is speaking (first, second or third person) is discarded and the plain transcript is used.
+  The model stays in memory (about 2.5 GB of video memory; Settings > Formatting > "Keep the local model
+  in memory"), because loading it again takes 5-20 s and dictations are often hours apart. Should Ollama
+  have dropped it anyway (it restarts when it updates itself), it is loaded in the background as soon as
+  a recording starts and by a check every five minutes, and a clean-up that has not started to answer
+  within about 2.5 s (`polish_first_token_s`) is skipped: the plain transcript is inserted at once rather
+  than late.
 - **Island indicator**: a small round-ended pill sits at the bottom centre of the screen all the time and
   expands with a short animation while you dictate (bars that swing with your voice thanks to automatic
   gain, then dots while transcribing, then a check mark; purple bars mean hands-free). Click it to start
@@ -71,14 +77,18 @@ into whatever app has the cursor.
   monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text. It
   checks its own window once a second and puts itself back when something hid or moved it ("Show
   desktop" minimising it, a display change, another window taking the top spot); each repair is logged.
-- **Knows what the window is about**: when a dictation starts, FreeFlow reads the text of the window
+- **The window in front as a backup**: when a dictation starts, FreeFlow reads the text of the window
   that will receive it through Windows accessibility (locally; nothing is stored or sent) and picks out
   the names on it (the contact on a HubSpot page, the person an e-mail is addressed to, names in the
   title, the parts of e-mail addresses) and its topic words (distinctive words that recur on the page,
   such as "pavers" or "stucco"; everyday English is ignored with the help of a 5,000-word frequency
-  list). Whisper is told to expect them, and a word it still gets wrong is replaced by the one on the
-  page that sounds like it ("Myron" -> "Miren", "papers" -> "pavers"). Settings > Transcription
-  switches it off.
+  list). What you said decides, not what is on the screen: the transcript is made without those words.
+  Only a word in doubt is then compared with them - one Whisper itself gave a low probability, or a
+  name that has exactly the sounds of a name on the page in another spelling ("Myron" / "Miren",
+  "Applebaum" / "Apelbaum") - and even then nothing is swapped blindly: that stretch of audio is heard
+  a second time (about 0.3 s) with the page's word as a hint, and the word changes only if Whisper then
+  writes it. "Christy" stays "Christy" on Kirsty's page, "update" never becomes "updater", and an
+  ordinary word that was heard confidently is never touched. Settings > Transcription switches it off.
 - **Self-corrections**: "today is Wednesday, I mean Tuesday" comes out as "Today is Tuesday." (local
   model; "actually" and "I mean" used as ordinary phrases are left alone).
 - **Learns how you speak**: corrections become rules. Right after a bad dictation, hold the hotkey and
@@ -156,7 +166,7 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/gamevocab.py` | League of Legends vocabulary for game chat (Whisper prompt, corrections, champion names) |
 | `freeflow/learning.py` | learned corrections: "correction ..." command, re-dictations, History edits -> rules + Whisper vocabulary |
 | `freeflow/editwatch.py` | watches the text box after an insertion (UI Automation) and learns words fixed by typing |
-| `freeflow/context.py`, `commonwords.py` | names and topic words of the window in front for Whisper's prompt and sound-alike fixes |
+| `freeflow/context.py`, `commonwords.py` | names and topic words of the window in front: a backup for doubtful words, confirmed by a second listen |
 | `freeflow/llm.py` | optional Claude / OpenAI polish |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |

@@ -264,8 +264,8 @@ class SettingsWindow(tk.Toplevel):
         ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="we", pady=10); r += 1
         self._label(f, "Vocabulary", r)
         self._text(f, "vocabulary", ", ".join(self.cfg.get("vocabulary") or []), r, height=3); r += 1
-        self._check(f, "window_context", "Use names from the window in front (the contact on a CRM page, an e-mail's "
-                                         "recipient) so they are spelled right", r); r += 1
+        self._check(f, "window_context", "Window in front as a backup: a name or a word the recogniser was unsure about is "
+                                         "checked against the names and topic words on the page", r); r += 1
         ttk.Label(f, text="Names, jargon and words that are often misheard, separated by commas. They are given to the model as hints.", foreground="#888", wraplength=520).grid(row=r, column=1, sticky="w"); r += 1
         self.engine_status = ttk.Label(f, text="", foreground="#888")
         self.engine_status.grid(row=r, column=0, columnspan=2, sticky="w", pady=(8, 0)); r += 1
@@ -332,6 +332,8 @@ class SettingsWindow(tk.Toplevel):
         r += 1
         self.ollama_status = ttk.Label(f, text="", foreground="#888", wraplength=640, justify="left")
         self.ollama_status.grid(row=r, column=0, columnspan=2, sticky="w"); r += 1
+        self._check(f, "llm_keep_loaded", "Keep the local model in memory (fastest: no 5-20 s wait after a pause; uses about "
+                                          "2.5 GB of video memory)", r); r += 1
         self._label(f, "Style", r)
         svar = self._var("polish_style")
         box = ttk.Frame(f); box.grid(row=r, column=1, sticky="w")

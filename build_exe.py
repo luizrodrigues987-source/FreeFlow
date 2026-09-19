@@ -37,7 +37,8 @@ Getting started
    Say "new line" or "new paragraph" to format. Change the keys under Settings > General.
 4. Recommended: install Ollama (https://ollama.com, free) so FreeFlow can turn your speech into proper
    sentences and paragraphs. Start Ollama once, then restart FreeFlow: it downloads the small text
-   model (about 2 GB) by itself and switches sentence structuring on.
+   model (about 2 GB) by itself and switches sentence structuring on. The model stays in memory so that
+   every dictation is quick (about 2.5 GB of video memory; Settings > Formatting switches that off).
 5. Settings > General > "Start FreeFlow when I sign in" keeps it running in the background all the time.
 
 In games such as League of Legends, FreeFlow opens the chat for you (Enter), inserts the text and leaves you to

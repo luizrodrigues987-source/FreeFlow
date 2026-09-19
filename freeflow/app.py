@@ -35,9 +35,9 @@ from .learning import Learner, sentence_similarity, split_correction, words as t
 from .editwatch import EditWatcher
 from . import context as wincontext
 from .postprocess import capitalize_first
-from .llm import LocalLLM, PolishError, polish, resolve_mode, too_short_to_polish
+from .llm import LocalLLM, PolishError, PolishSlow, polish, resolve_mode, too_short_to_polish
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
-from .recorder import Recorder, save_wav
+from .recorder import SAMPLE_RATE, Recorder, save_wav
 from .transcribe import EngineError, create_engine, engine_signature
 from .util import acquire_single_instance, foreground_window_info, message_box, setup_logging, window_info
 
@@ -66,6 +66,7 @@ class App:
         self.mic_muter = audioctl.MicSessionMuter()
         self.local_llm = LocalLLM(self.cfg)
         self._last_polish_warning = 0.0
+        self._last_llm_check = time.monotonic()
         self.state = "idle"            # idle | recording
         self.handsfree = False
         self.enabled = True
@@ -622,6 +623,9 @@ class App:
                 and (target.get("exe") or "").lower() not in self._game_apps()):
             # names on the page (contact, e-mail recipient ...) are read while the user talks
             target["context"] = wincontext.capture_async(target["hwnd"], target.get("title", ""), target.get("exe", ""))
+        if (target.get("exe") or "").lower() not in self._game_apps() and resolve_mode(self.cfg, self.local_llm) == "local":
+            # should Ollama have dropped the text model (restart, update), it loads while the user talks
+            self.local_llm.ensure_loaded_async("a recording started")
         t_target = time.monotonic()
         try:
             self.recorder.start(self.cfg.get("input_device") or None)
@@ -741,10 +745,25 @@ class App:
         self._job_q.put(Job(audio, duration, rms, self._target["exe"], self._target["title"], was_handsfree,
                             dict(self._target)))
 
+    def _keep_text_model_loaded(self):
+        """Controller idle tick, every 5 minutes: put the text model back into memory when Ollama dropped
+        it (it restarts when it updates itself), so that no dictation has to wait for the load."""
+        now = time.monotonic()
+        if now - self._last_llm_check < 300:
+            return
+        self._last_llm_check = now
+        if (self.state != "idle" or self.pending or not self.cfg.get("llm_keep_loaded", True)
+                or resolve_mode(self.cfg, self.local_llm) != "local"):
+            return
+        if (foreground_window_info()[0] or "").lower() in self._game_apps():
+            return                                         # a game is in front: leave the video memory to it
+        self.local_llm.ensure_loaded_async("idle check")
+
     def _track_foreground(self):
         """Remember the last foreground window that is not one of ours (polled while idle)."""
         try:
             self._maybe_restart_for_update()
+            self._keep_text_model_loaded()
             fg = focus.user32.GetForegroundWindow()
             if fg and not self._own_window(fg):
                 self._last_foreign_fg = int(fg)
@@ -866,21 +885,14 @@ class App:
         learning = bool(self.cfg.get("learning", True))
         if learning:
             vocab = self.learner.vocabulary() + vocab      # words learned from corrections, then the user's list
-        ctx = None
-        fut = (job.target or {}).get("context")
-        if fut is not None:
-            ctx = fut.result(1.0)                          # the page read started with the recording
-            if ctx and (ctx.names or ctx.terms):
-                vocab = ctx.vocabulary() + vocab           # topic words and names from the window in front
-                log.info("Window context: %d names, %d topic words from %s (%s...)", len(ctx.names), len(ctx.terms),
-                         ctx.source, ", ".join((ctx.names + ctx.terms)[:5]))
         game_vocab = job.app_exe.lower() in self._game_apps() and bool(self.cfg.get("game_vocab", True))
         if game_vocab:
             # League jargon, items and champion names for Whisper; the user's own words come last (they count most)
             vocab = gamevocab.whisper_terms(list(self.cfg.get("game_vocabulary") or []) + vocab)
         prompt = build_whisper_prompt(vocab, bool(self.cfg.get("whisper_punctuation_prompt", True)))
+        details: dict = {}
         try:
-            raw = engine.transcribe(job.audio, self.cfg.get("language", "en"), prompt)
+            raw = engine.transcribe(job.audio, self.cfg.get("language", "en"), prompt, details)
         except EngineError as e:
             self._fail(str(e))
             return
@@ -894,11 +906,8 @@ class App:
                 return
         elif text and learning:
             text = self.learner.apply(text)
-        if text and ctx is not None and (ctx.names or ctx.terms):
-            fixed = ctx.correct(text)
-            if fixed != text:
-                log.info("Window context: %s", "; ".join(f"{a} -> {b}" for a, b in ctx.fixed))
-                text = fixed
+        if text and not game_vocab:
+            text = self._window_backup(job, engine, text, vocab, details)
         if text and game_vocab:
             text = gamevocab.correct_game_text(text)
         if not text:
@@ -918,6 +927,9 @@ class App:
                 if polished:
                     text = polished
                 log.info("Structured with %s in %.2fs: %r", mode, time.time() - t1, text[:120])
+            except PolishSlow as e:
+                # the text model was not in memory (it is being loaded now): speed beats polish here
+                log.info("AI clean-up skipped after %.1f s: %s", time.time() - t1, e)
             except PolishError as e:
                 log.warning("AI clean-up failed (%s): %s", mode, e)
                 if time.time() - self._last_polish_warning > 300:
@@ -991,6 +1003,39 @@ class App:
                  method, "ok" if ok else "FAILED")
         if self.settings_win is not None:
             self.ui(self.settings_win.refresh_history)
+
+    def _window_backup(self, job: Job, engine, text: str, vocab: list, details: dict) -> str:
+        """The window in front as a backup for words in doubt (see context.WindowContext): the transcript
+        was made without it; a doubtful word changes only when a second listen to that stretch of audio,
+        with the window's word as a hint, writes the window's word."""
+        fut = (job.target or {}).get("context")
+        if fut is None:
+            return text
+        words = details.get("words") or []
+        probs = wincontext.word_probabilities(words)
+        if not wincontext.worth_a_look(text, probs):
+            return text                                    # every word ordinary and confidently heard
+        ctx = fut.result(0.6)                              # the page read began with the recording
+        if ctx is None or not (ctx.names or ctx.terms):
+            return text
+        cands, clip = wincontext.second_listen_plan(ctx.candidates(text, probs, protected=vocab), words, job.duration)
+        if not cands:
+            return text
+        t0 = time.time()
+        audio = job.audio if clip is None else job.audio[int(clip[0] * SAMPLE_RATE):int(clip[1] * SAMPLE_RATE)]
+        hints = [c["replacement"] for c in cands]          # last in the prompt: that is where Whisper looks most
+        prompt = build_whisper_prompt(vocab + hints, bool(self.cfg.get("whisper_punctuation_prompt", True)))
+        try:
+            again = engine.transcribe(audio, self.cfg.get("language", "en"), prompt)
+        except EngineError as e:
+            log.info("Window context: second listen failed (%s)", e)
+            return text
+        accepted = ctx.confirmed(cands, again)
+        kept = [c for c in cands if c["word"] not in {a["word"] for a in accepted}]
+        log.info("Window context (%s, second listen %.2f s): %s", ctx.source, time.time() - t0, "; ".join(
+            [f"{c['word']} -> {c['replacement']}" for c in accepted] +
+            [f"kept {c['word']!r} (not {c['replacement']!r}: the audio does not say so)" for c in kept]))
+        return ctx.apply(text, accepted) if accepted else text
 
     # ------------------------------------------------------------------
     # learning from corrections
@@ -1175,7 +1220,13 @@ def find_running_instances() -> list:
         if p.pid in skip or name not in ("python.exe", "pythonw.exe", "freeflow.exe"):
             continue
         if name == "freeflow.exe" or "freeflow.pyw" in cmd.lower() or "freeflow.app" in cmd.lower():
-            found.append(p)
+            # a test copy (own FREEFLOW_CONFIG, own single-instance mutex) and the real one leave each other alone
+            try:
+                namespace = p.environ().get("FREEFLOW_CONFIG", "")
+            except Exception:
+                namespace = ""
+            if namespace == os.environ.get("FREEFLOW_CONFIG", ""):
+                found.append(p)
     return found
 
 
@@ -1273,12 +1324,46 @@ def apply_cli_settings(args: list) -> bool:
     return changed
 
 
+def selftest(wav_path: str = "") -> int:
+    """--selftest [file.wav]: load the speech engine exactly as the app does, transcribe a recording (the
+    last dictation kept on disk when no file is given) and log the words with their probabilities.
+    Exit code 0 = text came out.  Meant for checking a packaged build."""
+    import wave
+    setup_logging()
+    cfg = Config()
+    path = wav_path or LAST_RECORDING_PATH
+    try:
+        with wave.open(path, "rb") as w:
+            if w.getframerate() != SAMPLE_RATE or w.getnchannels() != 1 or w.getsampwidth() != 2:
+                raise ValueError("needs 16 kHz mono 16-bit")
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
+    except Exception as e:
+        log.error("Self-test: cannot read %s (%s)", path, e)
+        return 2
+    engine = create_engine(cfg)
+    engine.load()
+    if engine.error:
+        log.error("Self-test: engine failed: %s", engine.error)
+        return 3
+    details: dict = {}
+    t0 = time.time()
+    text = engine.transcribe(audio, cfg.get("language", "en"), build_whisper_prompt([], True), details)
+    words = details.get("words") or []
+    log.info("Self-test: %.1f s audio -> %r in %.2f s on %s; %d words with probabilities (%s)", len(audio) / SAMPLE_RATE,
+             text[:120], time.time() - t0, engine.describe(), len(words),
+             " ".join("%s:%.2f" % (w["word"], w["prob"]) for w in words[:12]))
+    return 0 if text and words else 1
+
+
 def main(argv: Optional[list] = None):
-    """Command line:  --quit | --restart | --update | --autostart on|off | --set key=value
+    """Command line:  --quit | --restart | --update | --autostart on|off | --set key=value | --selftest [wav]
     (no arguments = run normally)."""
     args = list(sys.argv[1:] if argv is None else argv)
     only_settings = False
     just_updated = 0
+    if "--selftest" in args:
+        i = args.index("--selftest")
+        sys.exit(selftest(args[i + 1] if i + 1 < len(args) and not args[i + 1].startswith("--") else ""))
     if "--update" in args:
         # "Update FreeFlow.bat": fetch the latest code, then (re)start with it
         setup_logging()
