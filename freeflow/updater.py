@@ -58,9 +58,36 @@ def staged_revision(update_dir: str = None) -> int:
     return _revision_of(os.path.join(update_dir or UPDATE_DIR, "freeflow", "__init__.py"))
 
 
+def broken_revisions(update_dir: str = None) -> set:
+    """Revisions the loader put aside because they failed to start (folders update.broken-*)."""
+    base = update_dir or UPDATE_DIR
+    parent, name = os.path.dirname(base), os.path.basename(base)
+    out = set()
+    try:
+        for d in os.listdir(parent):
+            if d.startswith(name + ".broken-"):
+                rev = _revision_of(os.path.join(parent, d, "freeflow", "__init__.py"))
+                if rev:
+                    out.add(rev)
+    except OSError:
+        pass
+    return out
+
+
 def local_revision(update_dir: str = None) -> int:
     """Newest code available on this PC: what is running, or what is already staged for the next start."""
     return max(int(CODE_REVISION or 0), staged_revision(update_dir))
+
+
+def preflight(z: "zipfile.ZipFile") -> Optional[str]:
+    """Why the code in the zip must not be installed (None = fine): a module that does not compile."""
+    for name in z.namelist():
+        if name.startswith("freeflow/") and name.endswith(".py"):
+            try:
+                compile(z.read(name).decode("utf-8"), name, "exec")
+            except Exception as e:
+                return f"{name} does not compile ({e})"
+    return None
 
 
 def inspect_zip(data: bytes) -> tuple[int, str]:
@@ -95,6 +122,15 @@ def apply_from_zip(data: bytes, update_dir: str = None, force: bool = False,
     if rev <= local_revision(update_dir) and not force:
         return UpdateResult("current", f"FreeFlow is up to date (revision {local_revision(update_dir)})",
                             local_revision(update_dir), ver, page_url)
+    if rev in broken_revisions(update_dir) and not force:
+        # it failed to start here before; installing it again would restart FreeFlow every half minute
+        return UpdateResult("current", f"Update r{rev} did not start on this PC before; waiting for a newer one",
+                            local_revision(update_dir), ver, page_url)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        problem = preflight(z)
+    if problem:
+        log.error("Update r%d rejected: %s", rev, problem)
+        return UpdateResult("error", f"Update r{rev} is damaged ({problem}); not installed", page_url=page_url)
     if not is_frozen():
         return UpdateResult("source", f"Update r{rev} is available, but this copy runs from source code: use git pull",
                             rev, ver, page_url)
@@ -132,8 +168,13 @@ def check_and_apply(url: str = None, page_url: str = None, update_dir: str = Non
 
 
 def relaunch(extra_args: Optional[list] = None):
-    """Start a fresh FreeFlow (which asks the running one to quit) so the staged code takes effect."""
+    """Start a fresh FreeFlow (which asks the running one to quit) so the staged code takes effect.
+    The new copy is told which process it replaces: it is a child of this one, and a FreeFlow never
+    closes its own parents (its launcher) otherwise - before, the new copy just met the single-instance
+    lock ("FreeFlow is already running") and the update waited for the next sign-in."""
     args = list(extra_args or ["--restart"])
+    if "--restart" in args and "--replace" not in args:
+        args += ["--replace", str(os.getpid())]
     try:
         if is_frozen():
             subprocess.Popen([sys.executable] + args, cwd=os.path.dirname(sys.executable), close_fds=True)

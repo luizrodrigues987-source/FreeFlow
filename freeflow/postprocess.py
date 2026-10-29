@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-FILLER_RE = re.compile(r"(?i)(?<![\w'\-])(?:um+|uh+|uhm+|umm+|hmm+|erm+|ah+|mhm+)(?![\w'\-])[,.!?;:]?[ \t]*")
+FILLER_RE = re.compile(r"(?i)(?<![\w'\-])(?:um+|uh+|uhm+|umm+|hmm+|erm+|ah+|mhm+)(?![\w'\-])[,.!?;:…]*[ \t]*")
 
 # "new line" / "new paragraph" only when they stand alone (preceded or followed by punctuation / edges)
 _CMD_BEFORE = r"(?i)(?:(?<=[.,!?;:\n])[ \t]*|^[ \t]*)"
@@ -49,7 +49,7 @@ def remove_fillers(text: str) -> str:
                     out.pop()
                 out.append(" ")
             prev = "".join(out).rstrip()
-            if not prev or prev[-1] in ".!?\n":
+            if not prev or prev[-1] in "!?\n" or (prev[-1] == "." and not re.search(r"(?:\b[A-Za-z]\.)+$", prev)):
                 cap_next = True
             continue
         if cap_next:
@@ -67,16 +67,32 @@ def remove_fillers(text: str) -> str:
 
 
 BULLET_RE = re.compile(_CMD_BEFORE + r"(?:new\s+)?bullet(?:\s+point)?" + _CMD_AFTER)
-BULLET_END_RE = re.compile(r"(?i)(?<![\w\-])(?:new\s+)?bullet(?:\s+point)?(?=[.,!?;:]|[ \t]*$|[ \t]*\n)[.,!?;:]*[ \t]*")
+BULLET_END_RE = re.compile(r"(?i)(?<![\w\-])(?:new\s+bullet(?:\s+point)?|bullet\s+point)(?=[.,!?;:]|[ \t]*$|[ \t]*\n)[.,!?;:]*[ \t]*")
+BULLET_MID_RE = re.compile(r"(?i)(?<![\w\-])(?:new\s+)?bullet\s+point(?![\w\-])[.,!?;:]*[ \t]*")
+# "we launched a new line", "our new line of products", "one more bullet point": a thing, not a command
+_DETERMINERS = {"a", "an", "the", "our", "your", "my", "his", "her", "their", "its", "this", "that", "these", "those",
+                "one", "more", "another", "each", "every", "any", "some", "no", "whole", "entire", "same"}
+
+
+def _command_sub(rx, repl: str, text: str) -> str:
+    def sub(m):
+        prev = re.findall(r"[A-Za-z']+", text[:m.start()][-30:])
+        if prev and prev[-1].lower() in _DETERMINERS and not re.search(r"[.,!?;:\n]\s*$", text[:m.start()]):
+            return m.group(0)
+        return repl
+    return rx.sub(sub, text)
 
 
 def apply_voice_commands(text: str) -> str:
     for rx in (NEW_PARAGRAPH_RE, NEW_PARAGRAPH_END_RE):
-        text = rx.sub("\n\n", text)
+        text = _command_sub(rx, "\n\n", text)
     for rx in (NEW_LINE_RE, NEW_LINE_END_RE):
-        text = rx.sub("\n", text)
+        text = _command_sub(rx, "\n", text)
     for rx in (BULLET_RE, BULLET_END_RE):
-        text = rx.sub("\n- ", text)
+        text = _command_sub(rx, "\n- ", text)
+    if "\n- " in text:
+        # a list has started: "bullet point" in the middle of a sentence is the next item too
+        text = _command_sub(BULLET_MID_RE, "\n- ", text)
     text = re.sub(r"\n- \s*\n", "\n", text)   # a stray "bullet point" with nothing after it
     text = re.sub(r"[ \t]*,[ \t]*\n", "\n", text)          # drop a comma left before a line break
     text = re.sub(r"\n[ \t]+(?!- )", "\n", text)
@@ -100,7 +116,7 @@ _MARKER_RE = re.compile(
     r"(?P<punct>[,.:;)\-]*)(?=\s)")
 _BOUNDARY_RE = re.compile(r"(?i)(?:^|[,.;:!?]\s*|\b(?:and|then|also|next)\s+|\n\s*)$")
 _TRAIL_RE = re.compile(r"(?i)[\s,;:\-]*(?:\band\b|\bthen\b|\balso\b|\band then\b)?[\s,;:\-]*$")
-_LEAD_RE = re.compile(r"(?i)^(?:of all|off)?[\s,;:\-]*")
+_LEAD_RE = re.compile(r"(?i)^(?:of all|off|(?:one|thing)\b(?:\s+is)?)?[\s,;:\-]*")
 _BULLET_LINE_RE = re.compile(r"^(\s*(?:\d{1,2}[.)]|[-*•])\s+)(.*)$")
 
 
@@ -176,6 +192,8 @@ def format_enumerations(text: str) -> str:
             continue
         if family == "ordinal" and value == -1:      # "lastly" closes whatever list is open
             value = None
+        if family == "cardinal" and not m.group("pre") and not m.group("punct"):
+            continue
         cands.append((m.start(), m.end(), value, family, bool(_BOUNDARY_RE.search(text[:m.start()])), level))
     for i, c in enumerate(cands):
         if c[2] != 1 or c[5] != 0:
@@ -249,25 +267,34 @@ def apply_replacements(text: str, replacements: dict) -> str:
 def capitalize_first(text: str) -> str:
     for i, ch in enumerate(text):
         if ch.isalpha():
+            word = re.match(r"[A-Za-z]+", text[i:])
+            if word and any(c.isupper() for c in word.group(0)[1:]):
+                return text                          # iPhone, eBay, macOS: written that way on purpose
             return text[:i] + ch.upper() + text[i + 1:]
         if not ch.isspace() and ch not in "\"'(“‘[":
             return text
     return text
 
 
-def looks_like_hallucination(text: str, rms: float, duration: float = 99.0) -> bool:
-    """Whisper's stock phrases for (near) silence, e.g. 'Thank you.' on a 0.4 s accidental tap."""
+def looks_like_hallucination(text: str, rms: float, duration: float = 99.0, no_speech: float = None) -> bool:
+    """Whisper's stock phrases for (near) silence, e.g. 'Thank you.' on a 0.4 s accidental tap.  Not the
+    loudness alone: a webcam microphone records clear speech at rms 0.005-0.02, and "Thanks!" or "Okay."
+    are real replies.  Whisper's own no-speech probability says whether anything was said."""
     norm = re.sub(r"[^\w\s']", "", text.lower()).strip()
     norm = re.sub(r"\s+", " ", norm)
-    return norm in HALLUCINATIONS and (rms < 0.02 or duration < 2.0)
+    if norm not in HALLUCINATIONS:
+        return False
+    if no_speech is not None and no_speech > 0.6:
+        return True
+    return duration < 0.8 or rms < 0.002
 
 
-def clean_transcript(text: str, cfg, rms: float = 1.0, duration: float = 99.0) -> str:
+def clean_transcript(text: str, cfg, rms: float = 1.0, duration: float = 99.0, no_speech: float = None) -> str:
     """Apply the rule based pipeline according to the config."""
     text = normalize_spaces(text or "")
     if not text:
         return ""
-    if looks_like_hallucination(text, rms, duration):
+    if looks_like_hallucination(text, rms, duration, no_speech):
         return ""
     if cfg.get("remove_fillers", True):
         text = remove_fillers(text)

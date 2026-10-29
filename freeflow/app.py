@@ -31,11 +31,12 @@ from .history import History
 from .hotkeys import HotkeyManager, pretty_combo
 from . import gamevocab
 from .inject import inject_game_chat, inject_text, press_enter, send_backspaces, send_undo, wait_modifiers_released
-from .learning import Learner, sentence_similarity, split_correction, words as text_words
+from .learning import Learner, sentence_similarity, splice_correction, split_correction, words as text_words
 from .editwatch import EditWatcher
 from . import context as wincontext
 from .postprocess import capitalize_first
-from .llm import LocalLLM, PolishError, PolishSlow, polish, resolve_mode, too_short_to_polish
+from .llm import (LocalLLM, PolishError, PolishSlow, PolishUnreachable, describe_app, polish, resolve_mode,
+                  too_short_to_polish)
 from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
 from .recorder import SAMPLE_RATE, Recorder, save_wav
 from .transcribe import EngineError, create_engine, engine_signature
@@ -44,6 +45,10 @@ from .util import acquire_single_instance, foreground_window_info, message_box, 
 log = logging.getLogger(__name__)
 # a hotkey press older than this when it reaches the controller is not acted on (we were stuck)
 STALE_PRESS_S = 2.0
+# the last text box is used for a window without one only if it was dictated into this recently
+LAST_TARGET_MAX_AGE_S = 15 * 60
+# a spoken "correction ..." refers to the previous dictation only within this time
+CORRECTION_MAX_AGE_S = 10 * 60
 
 
 @dataclass
@@ -59,6 +64,7 @@ class Job:
 
 class App:
     def __init__(self):
+        setup_logging(debug="--debug" in sys.argv)   # first: loading config and learned rules logs too
         self.cfg = Config()
         self.history = History(max_entries=int(self.cfg.get("history_max") or 1000))
         self.recorder = Recorder()
@@ -71,6 +77,7 @@ class App:
         self.handsfree = False
         self.enabled = True
         self.pending = 0               # transcription jobs in flight
+        self._pending_lock = threading.Lock()
         self._rec_started = 0.0
         self._target: dict = {"hwnd": 0, "exe": "", "title": "", "redirected": False, "editable": None}
         self._last_target: Optional[dict] = None   # last window we inserted text into (a real text box)
@@ -420,7 +427,7 @@ class App:
         log.info("Restarting for update r%s", rev)
         self.ui(self.tray.notify, "Installing the update and restarting FreeFlow…", "FreeFlow update")
         time.sleep(1.5)
-        updater.relaunch(["--restart"])
+        updater.relaunch(["--restart", "--updated", str(rev)])
 
     def _maybe_restart_for_update(self):
         """Controller idle tick: a downloaded update is installed once the PC has been quiet a while."""
@@ -456,15 +463,16 @@ class App:
                     self.ui(self.tray.notify, f"Update r{res.revision} downloaded. FreeFlow restarts the next time "
                                               "it is not being used.", "FreeFlow update")
             elif res.status == "updated":
-                if self.state == "recording":
+                if self.state != "idle" or self.pending:
                     self.ui(self.tray.notify, f"{res.message} once you finish dictating.", "FreeFlow update")
                     for _ in range(600):
                         time.sleep(1)
-                        if self.state != "recording":
+                        if self.state == "idle" and not self.pending:
                             break
+                    time.sleep(1.0)                    # let a paste's clipboard restore finish
                 self.ui(self.tray.notify, "Installing the update and restarting FreeFlow…", "FreeFlow update")
                 time.sleep(1.5)
-                updater.relaunch(["--restart"])
+                updater.relaunch(["--restart", "--updated", str(res.revision)])
             elif res.status == "full_package":
                 self.ui(self.tray.notify, res.message, "FreeFlow update")
             elif not auto:
@@ -517,8 +525,11 @@ class App:
             try:
                 ev = self._ctrl_q.get(timeout=0.25)
             except queue.Empty:
-                self._check_max_duration()
-                self._track_foreground()
+                try:
+                    self._check_max_duration()
+                    self._track_foreground()
+                except Exception:
+                    log.exception("controller idle tick failed")
                 continue
             try:
                 self._handle(ev)
@@ -614,7 +625,12 @@ class App:
         if mic_mode in ("list", "all"):
             self.mic_muter.mute(mic_mode, list(self.cfg.get("mute_mic_apps") or []))
         t_mute = time.monotonic()
-        target = self._choose_target()
+        try:
+            target = self._choose_target()
+        except Exception:
+            log.exception("choosing the target failed")
+            exe, title, _pid, hwnd = foreground_window_info()
+            target = {"hwnd": hwnd, "exe": exe, "title": title, "redirected": False, "editable": None}
         self._target = target
         if self.overlay and target.get("hwnd") != self._followed:
             self._followed = int(target.get("hwnd") or 0)
@@ -735,7 +751,8 @@ class App:
                 save_wav(LAST_RECORDING_PATH, audio)
             except Exception as e:
                 log.warning("could not save recording: %s", e)
-        self.pending += 1
+        with self._pending_lock:
+            self.pending += 1
         ready = self.engine is not None and self.engine.ready.is_set()
         if self.cfg.get("overlay", True):
             self.ui(self.overlay.show, "transcribing" if ready else "loading",
@@ -752,8 +769,12 @@ class App:
         if now - self._last_llm_check < 300:
             return
         self._last_llm_check = now
-        if (self.state != "idle" or self.pending or not self.cfg.get("llm_keep_loaded", True)
-                or resolve_mode(self.cfg, self.local_llm) != "local"):
+        if self.state != "idle" or self.pending:
+            return
+        if self.cfg.get("polish", "auto") in ("auto", "local") and not self.local_llm.ready:
+            self._setup_local_llm()                        # Ollama was not there before; maybe it is now
+            return
+        if not self.cfg.get("llm_keep_loaded", True) or resolve_mode(self.cfg, self.local_llm) != "local":
             return
         if (foreground_window_info()[0] or "").lower() in self._game_apps():
             return                                         # a game is in front: leave the video memory to it
@@ -785,7 +806,7 @@ class App:
         if hwnd and self._own_window(hwnd):
             # our own hidden window is in front (e.g. right after start-up): use the user's real window
             fallback = self._last_foreign_fg if focus.window_exists(self._last_foreign_fg) else 0
-            if self._last_target and focus.window_exists(self._last_target["hwnd"]):
+            if self._recent_last_target():
                 log.info("Foreground is FreeFlow itself; sending the text to the last text box (%s)", self._last_target["exe"])
                 return dict(self._last_target, redirected=True, editable=True)
             if fallback:
@@ -806,14 +827,25 @@ class App:
             log.debug("focus check failed: %s", e)
             editable, info = None, {}
         target["editable"] = editable
-        last = self._last_target
-        if editable is False and last and last["hwnd"] != hwnd and focus.window_exists(last["hwnd"]):
+        last = self._recent_last_target()
+        if editable is False and last and last["hwnd"] != hwnd:
             log.info("Smart target: %s has no text box focused (%s %r); sending the text to %s",
                      exe or "?", info.get("control_type", "?"), info.get("class", ""), last["exe"])
             target = dict(last, redirected=True, editable=True)
+        elif editable is False:
+            target["no_text_box"] = True
+            log.info("Smart target: %s has no text box focused and none was used recently; keeping it", exe or "?")
         elif editable is None:
             log.debug("Smart target: %s gives no accessibility info; keeping it", exe or "?")
         return target
+
+    def _recent_last_target(self) -> Optional[dict]:
+        last = self._last_target
+        if not last or not focus.window_exists(last["hwnd"]):
+            return None
+        if time.time() - float(last.get("time") or 0) > LAST_TARGET_MAX_AGE_S:
+            return None                                  # an hours-old chat is not where this dictation belongs
+        return last
 
     def _cancel_recording(self, reason: str = "cancelled"):
         quiet = self._provisional
@@ -867,7 +899,8 @@ class App:
                 log.exception("processing failed")
                 self._fail(f"Error: {e}")
             finally:
-                self.pending = max(0, self.pending - 1)
+                with self._pending_lock:
+                    self.pending = max(0, self.pending - 1)
                 if self.pending == 0 and self.state != "recording":
                     self.ui(self.tray.set_state, "idle" if self.enabled else "disabled")
                 self.ui(self.tray.refresh_title)
@@ -879,7 +912,8 @@ class App:
             self._fail("No speech engine configured")
             return
         if not engine.ready.is_set():
-            self.ui(self.overlay.show, "loading", "Loading speech model…")
+            if self.cfg.get("overlay", True):
+                self.ui(self.overlay.show, "loading", "Loading speech model…")
             engine.ready.wait()
         vocab = [w.strip() for w in (self.cfg.get("vocabulary") or []) if w.strip()]
         learning = bool(self.cfg.get("learning", True))
@@ -897,14 +931,18 @@ class App:
             self._fail(str(e))
             return
         log.info("Raw transcript (%.2fs): %r", time.time() - t0, raw[:200])
-        text = clean_transcript(raw, self.cfg, job.rms, job.duration)
+        text = clean_transcript(raw, self.cfg, job.rms, job.duration, details.get("no_speech"))
         undo_last = None
         correction = split_correction(text) if (text and learning) else None
         if correction is not None:
-            text, undo_last = self._handle_correction(correction, job)
-            if not text:
-                return
-        elif text and learning:
+            fixed, undo_last, is_correction = self._handle_correction(correction, job)
+            if is_correction:
+                text = fixed
+                if not text:
+                    return
+            else:
+                correction = None                          # an ordinary sentence that starts with "correction"
+        if correction is None and text and learning:
             text = self.learner.apply(text)
         if text and not game_vocab:
             text = self._window_backup(job, engine, text, vocab, details)
@@ -914,21 +952,24 @@ class App:
             if self.cfg.get("overlay", True):
                 self.ui(self.overlay.show, "info", "No speech detected", 1200)
             return
-        app_context = f"{job.app_exe} - {job.app_title}".strip(" -")
+        app_context = describe_app(job.app_exe, job.app_title)
         mode = resolve_mode(self.cfg, self.local_llm)
         if mode != "off" and job.app_exe.lower() in self._game_apps() and not self.cfg.get("polish_in_games", False):
             # chat messages are short and casual; the small model has rewritten them ("you" became "I")
             mode = "off"
+        heard = text                                       # before the AI clean-up: what rules are learned against
         if mode != "off" and not too_short_to_polish(text):
-            self.ui(self.overlay.show, "transcribing", "Polishing…")
+            if self.cfg.get("overlay", True):
+                self.ui(self.overlay.show, "transcribing", "Polishing…")
             t1 = time.time()
             try:
                 polished = normalize_spaces(polish(text, self.cfg, app_context, mode=mode, local_llm=self.local_llm))
                 if polished:
                     text = polished
                 log.info("Structured with %s in %.2fs: %r", mode, time.time() - t1, text[:120])
-            except PolishSlow as e:
-                # the text model was not in memory (it is being loaded now): speed beats polish here
+            except (PolishSlow, PolishUnreachable) as e:
+                # the text model was not in memory / Ollama had stopped: it is being brought back in the
+                # background, and speed beats polish for this one dictation
                 log.info("AI clean-up skipped after %.1f s: %s", time.time() - t1, e)
             except PolishError as e:
                 log.warning("AI clean-up failed (%s): %s", mode, e)
@@ -936,38 +977,51 @@ class App:
                     self._last_polish_warning = time.time()
                     self.ui(self.tray.notify, f"AI clean-up skipped: {e}", "FreeFlow")
         if learning and correction is None and self.cfg.get("learn_from_redictation", True):
-            self._maybe_learn_redictation(text)
+            self._maybe_learn_redictation(heard)
         final = finalize_for_injection(text, self.cfg)
         method = self.cfg.get("inject_method", "paste")
         type_apps = {a.strip().lower() for a in (self.cfg.get("type_method_apps") or []) if a.strip()}
         if job.app_exe.lower() in type_apps:
             method = "type"
         target = job.target or {}
-        if self.cfg.get("smart_target", True) and target.get("hwnd") and focus.window_exists(target["hwnd"]):
+
+        def to_clipboard(why: str):
+            from .inject import clipboard_set_text
+            clipboard_set_text(final)
+            if self.cfg.get("history_enabled", True):
+                self.history.add(text, raw, job.duration, engine.describe(), job.app_exe, time.time() - t0)
+            log.info("Text left on the clipboard: %s", why)
+            self._fail(f"{why}; the text is on the clipboard (Ctrl+V)")
+
+        label = focus.app_label(target.get("exe", ""), target.get("title", ""))
+        if self.cfg.get("smart_target", True) and target.get("hwnd"):
+            if not focus.window_exists(target["hwnd"]):
+                # the window was closed while we transcribed: whatever is in front now is not what was meant
+                return to_clipboard(f"{label or 'The window'} was closed")
             if focus.user32.GetForegroundWindow() != target["hwnd"]:
-                label = focus.app_label(target.get("exe", ""), target.get("title", ""))
                 if focus.activate_window(target["hwnd"]):
                     log.info("Brought %s back to the front for the text", label)
                     time.sleep(0.15)
                 else:
-                    from .inject import clipboard_set_text
-                    clipboard_set_text(final)
-                    if self.cfg.get("history_enabled", True):
-                        self.history.add(text, raw, job.duration, engine.describe(), job.app_exe, time.time() - t0)
-                    self._fail(f"Couldn't switch to {label}; the text is on the clipboard (Ctrl+V)")
-                    return
+                    return to_clipboard(f"Couldn't switch to {label}")
+        if not self._keys_released():
+            # Ctrl/Win/Alt/Shift still down: our Ctrl+V would become Win+Ctrl+V, letters shortcuts
+            return to_clipboard("Keys were still held down")
         # game chat: open the chat box first (Enter), put the text in the way the game accepts it, and
         # optionally send afterwards.  A chat message is one line: a line break would send it early.
         exe_l = (target.get("exe") or job.app_exe or "").lower()
         chat_open = {a.strip().lower() for a in (self.cfg.get("chat_open_apps") or []) if a.strip()}
         chat_send = {a.strip().lower() for a in (self.cfg.get("chat_send_apps") or []) if a.strip()}
         if undo_last is not None:
-            self._undo_insertion(undo_last)
+            if self.hotkeys.presses == undo_last["presses"]:
+                self._undo_insertion(undo_last)
+            else:
+                log.info("Not taking back the previous insertion: keys were pressed since")
+        no_box = bool(target.get("no_text_box"))
         if exe_l in chat_open or exe_l in chat_send:
             final = " ".join(part.strip() for part in final.splitlines() if part.strip())
             if self.cfg.get("append_space", True):
                 final += " "
-            wait_modifiers_released()
             if exe_l in chat_open:
                 press_enter()
                 time.sleep(max(0.05, float(self.cfg.get("chat_open_delay_ms", 200)) / 1000))
@@ -976,18 +1030,25 @@ class App:
             ok = inject_game_chat(final, how, self.cfg.get("restore_clipboard", True),
                                   int(self.cfg.get("clipboard_restore_delay_ms", 500)))
         else:
-            ok = inject_text(final, method, self.cfg.get("restore_clipboard", True),
+            # no text box in front and none used recently: paste anyway (the app may just not say), but
+            # leave the text on the clipboard instead of restoring the old content
+            ok = inject_text(final, method, self.cfg.get("restore_clipboard", True) and not no_box,
                              int(self.cfg.get("clipboard_restore_delay_ms", 500)),
                              int(self.cfg.get("type_chunk_delay_ms", 0)))
+            if ok and no_box:
+                self.ui(self.tray.notify, "No text field seemed to be focused, so the text is also on the clipboard "
+                                          "(Ctrl+V).", "FreeFlow")
         if ok and exe_l in chat_send:
             time.sleep(0.1)
             press_enter()
         if ok and target.get("hwnd") and (target.get("editable") is True or target.get("redirected")):
-            self._last_target = {"hwnd": target["hwnd"], "exe": target.get("exe", ""), "title": target.get("title", "")}
+            self._last_target = {"hwnd": target["hwnd"], "exe": target.get("exe", ""), "title": target.get("title", ""),
+                                 "time": time.time()}
         if ok:
             game = exe_l in chat_open or exe_l in chat_send
-            self._last_dictation = {"text": text, "final": final, "time": time.time(), "hwnd": int(target.get("hwnd") or 0),
-                                    "method": method, "presses": self.hotkeys.presses, "game": game}
+            self._last_dictation = {"text": text, "heard": heard, "final": final, "time": time.time(),
+                                    "hwnd": int(target.get("hwnd") or 0), "method": method,
+                                    "presses": self.hotkeys.presses, "game": game}
             if learning and not game and self.cfg.get("learn_from_edits", True):
                 # learn if the user fixes these words by typing
                 self.editwatch.start(final, label=focus.app_label(target.get("exe", ""), target.get("title", "")))
@@ -1001,8 +1062,20 @@ class App:
             self.ui(self.overlay.show, "done" if ok else "error", text if ok else "Could not insert text", 1000)
         log.info("Dictation: %.1fs audio -> %d chars in %.2fs via %s (%s)", job.duration, len(text), elapsed,
                  method, "ok" if ok else "FAILED")
-        if self.settings_win is not None:
-            self.ui(self.settings_win.refresh_history)
+        win = self.settings_win                            # read once: the Tk thread may close it meanwhile
+        if win is not None:
+            self.ui(win.refresh_history)
+
+    def _keys_released(self) -> bool:
+        """Wait until no modifier is held.  While the user holds the hotkey for the next dictation
+        (push-to-talk), wait for that to end instead of giving up after three seconds."""
+        if wait_modifiers_released(3.0):
+            return True
+        limit = time.monotonic() + float(self.cfg.get("max_record_seconds") or 300)
+        while time.monotonic() < limit and self.state == "recording" and not self.handsfree:
+            if wait_modifiers_released(1.0):
+                return True
+        return wait_modifiers_released(0.5)
 
     def _window_backup(self, job: Job, engine, text: str, vocab: list, details: dict) -> str:
         """The window in front as a backup for words in doubt (see context.WindowContext): the transcript
@@ -1041,19 +1114,30 @@ class App:
     # learning from corrections
     # ------------------------------------------------------------------
     def _handle_correction(self, corrected: str, job: Job) -> tuple:
-        """Spoken "correction ...": learn the difference to the last dictation; returns
-        (text to insert, last dictation to take back first or None)."""
+        """Spoken "correction ...": returns (text to insert, last dictation to take back first or None,
+        whether it was a correction at all).  It refers to the previous dictation only when that is recent
+        and the words fit it: the whole sentence again ("correction: start localhost"), or a few words that
+        sound like a part of it ("correction: enforced" after "... very loosely informed.") - then only
+        that part is replaced.  Anything else is an ordinary sentence that happens to start that way."""
         last = self._last_dictation
         if not corrected:
             if self.cfg.get("overlay", True):
                 self.ui(self.overlay.show, "info", 'Say "correction" and then the right words', 2200)
-            return "", None
-        if self.cfg.get("capitalize_first", True):
-            corrected = capitalize_first(corrected)
-        if not last:
-            log.info("Correction without a previous dictation; inserting %r", corrected)
-            return corrected, None
-        learned = self.learner.learn(last["text"], corrected, "voice")
+            return "", None, True
+        if not last or time.time() - last["time"] > CORRECTION_MAX_AGE_S:
+            return "", None, False
+        spliced = splice_correction(last["text"], corrected)
+        if spliced is not None:
+            learn_from, learn_to = last["text"], spliced
+            corrected = spliced
+        elif sentence_similarity(last.get("heard") or last["text"], corrected) >= 0.5:
+            learn_from, learn_to = last.get("heard") or last["text"], corrected
+            if self.cfg.get("capitalize_first", True):
+                corrected = capitalize_first(corrected)
+        else:
+            log.info("\"Correction ...\" does not fit the previous dictation; inserting it as said")
+            return "", None, False
+        learned = self.learner.learn(learn_from, learn_to, "voice")
         if learned:
             msg = "; ".join(f"{a} → {b}" for a, b in learned)
             log.info("Correction learned: %s", msg)
@@ -1063,7 +1147,7 @@ class App:
         undo = None
         if self.cfg.get("correction_replaces", True) and self._can_undo(last, job):
             undo = last
-        return corrected, undo
+        return corrected, undo, True
 
     def _can_undo(self, last: dict, job: Job) -> bool:
         """The last insertion can be taken back when it is recent, went to the same window, was not a
@@ -1082,21 +1166,26 @@ class App:
         log.info("Took back the previous insertion (%s)", last["method"])
 
     def _on_typed_edit(self, wrong: str, right: str):
-        """The user changed words of the inserted text by typing (edit watcher thread)."""
-        if self.learner.add_rule(wrong, right, "typing"):
+        """The user changed words of the inserted text by typing (edit watcher thread).  A fix that looks
+        like a mishearing is noted, and becomes a rule the second time: one-off rewording teaches nothing."""
+        learned, noted = self.learner.learn_typed(wrong, right)
+        if learned:
             log.info("Typed fix learned: %r -> %r", wrong, right)
-            self.ui(self.tray.notify, f"Learned from your edit: {wrong} → {right} (Settings > Learning to undo)", "FreeFlow")
+            self.ui(self.tray.notify, f"Learned from your edits: {wrong} → {right} (Settings > Learning to undo)", "FreeFlow")
+        elif noted:
+            log.info("Typed fix noted, learned if it happens again: %r -> %r", wrong, right)
 
     def _maybe_learn_redictation(self, text: str):
         """The same sentence dictated again within a short time: note the changed words; a fix seen
-        twice becomes a rule."""
+        twice becomes a rule.  Both sides are compared as heard (before the AI clean-up)."""
         last = self._last_dictation
         if not last or time.time() - last["time"] > 45 or len(text_words(text)) < 2:
             return
-        sim = sentence_similarity(last["text"], text)
+        before = last.get("heard") or last["text"]
+        sim = sentence_similarity(before, text)
         if sim < 0.6 or sim > 0.999:
             return
-        learned, noted = self.learner.learn_auto(last["text"], text)
+        learned, noted = self.learner.learn_auto(before, text)
         if learned:
             msg = "; ".join(f"{a} → {b}" for a, b in learned)
             log.info("Learned from re-dictation: %s", msg)
@@ -1205,12 +1294,21 @@ def _set_dpi_awareness():
             pass
 
 
-def find_running_instances() -> list:
-    """Other FreeFlow processes (excluding this process and its launcher chain)."""
+def find_running_instances(replace_pid: int = 0) -> list:
+    """Other FreeFlow processes (excluding this process and its launcher chain).  replace_pid: the copy
+    that started this one to be replaced (an update restart) - it is our parent, but must go."""
     import psutil
     me = psutil.Process(os.getpid())
-    skip = {me.pid} | {p.pid for p in me.parents()}
+    skip = ({me.pid} | {p.pid for p in me.parents()}) - {replace_pid}
     found = []
+    if replace_pid:
+        try:
+            p = psutil.Process(replace_pid)
+            if (p.name() or "").lower() in ("python.exe", "pythonw.exe", "freeflow.exe"):
+                found.append(p)
+                skip.add(replace_pid)
+        except Exception:
+            pass
     for p in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             name = (p.info.get("name") or "").lower()
@@ -1254,12 +1352,12 @@ def _main_windows_of(pids: set) -> list:
     return out
 
 
-def quit_running_instance(timeout: float = 12.0) -> bool:
+def quit_running_instance(timeout: float = 12.0, replace_pid: int = 0) -> bool:
     """Ask a running FreeFlow to shut down cleanly (restores any mutes); force-kill after `timeout`."""
     import ctypes
     import psutil
     WM_CLOSE = 0x0010
-    targets = find_running_instances()
+    targets = find_running_instances(replace_pid)
     if not targets:
         return False
     pids = {p.pid for p in targets}
@@ -1328,8 +1426,26 @@ def selftest(wav_path: str = "") -> int:
     """--selftest [file.wav]: load the speech engine exactly as the app does, transcribe a recording (the
     last dictation kept on disk when no file is given) and log the words with their probabilities.
     Exit code 0 = text came out.  Meant for checking a packaged build."""
+    import importlib
     import wave
+    import freeflow as _pkg
     setup_logging()
+    code_dir = os.path.dirname(os.path.dirname(os.path.abspath(_pkg.__file__)))
+    origin = "update folder" if os.path.basename(code_dir).lower() == "update" else (
+        "bundled" if getattr(sys, "frozen", False) else "source")
+    log.info("Self-test: code r%s from %s", getattr(_pkg, "CODE_REVISION", 0), origin)
+    # the modules the app only imports later (island, tray, settings window): a packaged build that lacks
+    # something they need must fail here, before an update is published, not on a friend's PC
+    for name in ("overlay", "tray", "settings_ui", "sounds"):
+        try:
+            importlib.import_module("freeflow." + name)
+        except Exception as e:
+            log.error("Self-test: freeflow.%s does not import: %s", name, e)
+            return 4
+    try:
+        import sv_ttk  # noqa: F401  (optional theme)
+    except Exception:
+        pass
     cfg = Config()
     path = wav_path or LAST_RECORDING_PATH
     try:
@@ -1394,7 +1510,14 @@ def main(argv: Optional[list] = None):
         quit_running_instance()
         return
     if "--restart" in args:
-        quit_running_instance()
+        replace_pid = 0
+        if "--replace" in args:
+            i = args.index("--replace")
+            try:
+                replace_pid = int(args[i + 1])
+            except (IndexError, ValueError):
+                replace_pid = 0
+        quit_running_instance(replace_pid=replace_pid)
         only_settings = False
     if only_settings:
         return

@@ -29,6 +29,12 @@ user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
 user32.SetForegroundWindow.argtypes = [wt.HWND]
 user32.SetForegroundWindow.restype = wt.BOOL
 user32.BringWindowToTop.argtypes = [wt.HWND]
+user32.IsHungAppWindow.argtypes = [wt.HWND]
+user32.IsHungAppWindow.restype = wt.BOOL
+user32.ShowWindowAsync.argtypes = [wt.HWND, ctypes.c_int]
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
+user32.SetWindowPos.restype = wt.BOOL
+_SWP_ASYNC_TOP = 0x0001 | 0x0002 | 0x4000      # NOSIZE | NOMOVE | ASYNCWINDOWPOS
 user32.GetForegroundWindow.restype = wt.HWND
 user32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
 user32.AttachThreadInput.restype = wt.BOOL
@@ -80,6 +86,9 @@ _uia = None
 _uia_failed = False
 
 
+_uia_lock = threading.Lock()
+
+
 def _automation():
     """Lazily create the IUIAutomation COM object (comtypes generates the wrapper module once).
 
@@ -88,6 +97,14 @@ def _automation():
     global _uia, _uia_failed
     if _uia is not None or _uia_failed:
         return _uia
+    with _uia_lock:                    # two inspector threads must not generate comtypes' wrapper at once
+        if _uia is None and not _uia_failed:
+            _create_automation()
+    return _uia
+
+
+def _create_automation():
+    global _uia, _uia_failed
     try:
         import comtypes
         import comtypes.client
@@ -112,7 +129,6 @@ def _automation():
     except Exception as e:
         log.warning("UI Automation unavailable (%s); smart targeting will be limited", e)
         _uia_failed = True
-    return _uia
 
 
 def describe_focus() -> dict:
@@ -284,8 +300,11 @@ def activate_window(hwnd: int, timeout: float = 1.2) -> bool:
         return False
     if user32.GetForegroundWindow() == hwnd:
         return True
+    if user32.IsHungAppWindow(hwnd):
+        log.info("The target window is not responding; not waiting for it")
+        return False
     if user32.IsIconic(hwnd):
-        user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.ShowWindowAsync(hwnd, SW_RESTORE)   # a synchronous call would wait for a hung window
     from .inject import send_dummy_key
     attempts = 0
     deadline = time.monotonic() + timeout
@@ -300,7 +319,7 @@ def activate_window(hwnd: int, timeout: float = 1.2) -> bool:
             tid_me = kernel32.GetCurrentThreadId()
             attached = bool(tid_fg) and tid_fg != tid_me and user32.AttachThreadInput(tid_me, tid_fg, True)
             try:
-                user32.BringWindowToTop(hwnd)
+                user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, _SWP_ASYNC_TOP)
                 user32.SetForegroundWindow(hwnd)
             finally:
                 if attached:

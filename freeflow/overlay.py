@@ -16,6 +16,7 @@ import ctypes
 import ctypes.wintypes as wt
 import logging
 import math
+import re
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -211,6 +212,7 @@ class Overlay:
         self._give_focus_back(previous_fg)
         self.root.after(1, lambda: self._give_focus_back(previous_fg))
         self.repairs = 0
+        self._repair_log: dict = {}
         self._last_top = 0.0
         self.win.after(GUARD_MS, self._guard)
         if self.mode == "island":
@@ -270,7 +272,17 @@ class Overlay:
 
     def _place(self, w: int, h: int):
         x, y = self._target_xy(w, h)
+        self._move(w, h, x, y)
+
+    def _move(self, w: int, h: int, x: int, y: int):
+        """Tk applies geometry() later, when idle - and a SetWindowPos in between (keeping the top spot,
+        showing the window) makes Tk forget the pending move: the guard then "restored" the indicator once
+        a second for hours without it ever moving.  So the move is applied right away."""
         self.win.geometry(f"{w}x{h}+{x}+{y}")
+        try:
+            self.win.update_idletasks()
+        except tk.TclError:
+            pass
 
     def _guard(self):
         """Once a second: undo whatever hid or moved the indicator - "Show desktop" minimising it, a
@@ -306,17 +318,28 @@ class Overlay:
                     user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
                 if "transparent" in fixed:
                     self.win.attributes("-alpha", 1.0)
-                self.win.geometry(f"{w}x{h}+{x}+{y}")
-                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                self._move(w, h, x, y)
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
                 self._last_top = now
                 self.repairs += 1
-                log.info("Indicator restored (%s)", ", ".join(fixed))
+                self._log_repair(", ".join(re.sub(r"\d+,\d+", "", f).strip() for f in fixed), fixed, now)
             elif now - self._last_top > 5:
                 # quietly keep the top spot (other windows can be raised above a topmost window)
                 user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
                 self._last_top = now
         except Exception as e:
             log.debug("indicator guard failed: %s", e)
+
+    def _log_repair(self, kind: str, fixed: list, now: float):
+        """The first repair of a kind is logged; repeats within 10 minutes are only counted (a repair that
+        kept recurring once wrote 40,000 lines in four days and pushed everything else out of the log)."""
+        last, skipped = self._repair_log.get(kind, (0.0, 0))
+        if now - last < 600:
+            self._repair_log[kind] = (last, skipped + 1)
+            return
+        more = f"; {skipped} more since {time.strftime('%H:%M', time.localtime(last))}" if skipped else ""
+        log.info("Indicator restored (%s)%s", ", ".join(fixed), more)
+        self._repair_log[kind] = (now, 0)
 
     def _set_size(self, w: float, h: float):
         self._cur_w, self._cur_h = float(w), float(h)

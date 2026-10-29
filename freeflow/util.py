@@ -12,6 +12,11 @@ from .config import DATA_DIR, LOG_PATH
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32.GetForegroundWindow.restype = wt.HWND        # the same handle type everywhere (focus.py compares them)
+user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+user32.GetWindowThreadProcessId.restype = wt.DWORD
+user32.GetWindowTextLengthW.argtypes = [wt.HWND]
+user32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 
 _mutex_handle = None
 
@@ -20,8 +25,12 @@ def setup_logging(debug: bool = False):
     os.makedirs(DATA_DIR, exist_ok=True)
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if debug else logging.INFO)
+    if any(getattr(h, "_freeflow", False) for h in root.handlers):
+        return                       # already set up ("--update" then the app): two handlers on one file
+                                     # would write every line twice and break the rollover for good
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
-    fh = logging.handlers.RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    fh = logging.handlers.RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=4, encoding="utf-8")
+    fh._freeflow = True
     fh.setFormatter(fmt)
     root.addHandler(fh)
     if sys.stderr is not None:  # pythonw.exe has no console

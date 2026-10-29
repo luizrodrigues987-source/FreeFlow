@@ -78,10 +78,21 @@ def icon_path() -> str:
     return path
 
 
+def desktop_folder() -> str:
+    """The real Desktop folder (OneDrive moves it to %OneDrive%\\Desktop on many Windows 11 PCs)."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+        buf = ctypes.create_unicode_buffer(wt.MAX_PATH)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x0010, None, 0, buf) == 0 and os.path.isdir(buf.value):
+            return buf.value                     # CSIDL_DESKTOPDIRECTORY
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+
 def create_desktop_shortcut() -> str:
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    if not os.path.isdir(desktop):
-        desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+    desktop = desktop_folder()
     link = os.path.join(desktop, "FreeFlow.lnk")
     icon = icon_path() if os.path.exists(icon_path()) else ""
     ps = (
@@ -91,7 +102,7 @@ def create_desktop_shortcut() -> str:
     ).format(link=link.replace("'", "''"), target=pythonw_path().replace("'", "''"),
              args="" if FROZEN else '"' + launcher_path().replace("'", "''") + '"',
              wd=project_root().replace("'", "''"),
-             icon=f"$s.IconLocation='{icon}';" if icon else "")
+             icon=f"$s.IconLocation='{icon.replace(chr(39), chr(39) * 2)}';" if icon else "")
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], check=True,
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return link

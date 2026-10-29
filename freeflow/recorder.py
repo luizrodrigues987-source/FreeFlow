@@ -91,13 +91,31 @@ class Recorder:
                     rate = int(info["default_samplerate"])
                 stream = sd.InputStream(device=idx, samplerate=rate, channels=1, dtype="float32",
                                         blocksize=1024, callback=self._callback)
-                stream.start()
+                try:
+                    stream.start()
+                except Exception:
+                    stream.close()
+                    raise
                 self._stream = stream
                 self._rate = rate
                 break
             except Exception as e:
                 last_err = e
                 log.warning("Could not open input at %s Hz: %s", rate, e)
+        if self._stream is None and not getattr(self, "_reinit", False):
+            # a headset or USB microphone was plugged in / out since start-up: PortAudio only lists the
+            # devices it saw when it started.  Look again and try once more.
+            log.info("Re-scanning audio devices")
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception as e:
+                log.warning("audio re-scan failed: %s", e)
+            self._reinit = True
+            try:
+                return self.start(device_spec)
+            finally:
+                self._reinit = False
         if self._stream is None:
             raise RuntimeError(f"Could not open microphone: {last_err}")
         try:

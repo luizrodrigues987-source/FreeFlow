@@ -23,8 +23,15 @@ into whatever app has the cursor.
 - **Smart target**: the text goes to the window you started dictating in, even if you click elsewhere
   while talking. If the window in front clearly cannot take text (the desktop, a file list, a web page
   without a focused field, a button), the text goes to the last window you dictated into, which is brought
-  to the front; the indicator shows a "-> Claude" style hint. Windows that give no accessibility
-  information (games, chat apps with the focus on a pane) always keep the text.
+  to the front; the indicator shows a "-> Claude" style hint - but only if you dictated there within the
+  last 15 minutes; otherwise the text is pasted into the window in front anyway and also left on the
+  clipboard. Windows that give no accessibility information (games, chat apps with the focus on a pane)
+  always keep the text. If the window you dictated into was closed while the text was being transcribed,
+  or keys are still held down when it is ready (Ctrl+V would become Win+Ctrl+V), nothing is typed: the text
+  is left on the clipboard and a notice says so.
+- **Your clipboard is left alone**: the previous clipboard text is put back after a paste, unless you copied
+  something new in the meantime, also when two dictations follow each other quickly. Pasted dictations are
+  kept out of Windows' clipboard history (Win+V) and the cloud clipboard.
 - **Games**: for games listed under Settings > Formatting > "Game chat: open first" (League of Legends by
   default) FreeFlow presses Enter to open the chat (so start with the chat box closed), types the text as
   Unicode characters, which reach text boxes only and can never trigger abilities, and leaves you to press
@@ -61,14 +68,20 @@ into whatever app has the cursor.
   Ollama (Qwen 2.5 3B by default, Gemma 3 4B also installed) turns run-on speech into punctuated sentences
   and paragraphs and drops repeated words and false starts, in well under a second on the GPU.
   On by default when Ollama is installed ("Auto"); Claude or OpenAI can be used instead with an API key.
-  Every result is checked before use: a rewrite that changes the length a lot, drops content words or
-  changes who is speaking (first, second or third person) is discarded and the plain transcript is used.
+  Every result is checked before use: a rewrite that changes the length a lot, drops content words,
+  adds words of its own (an answer to a question you dictated, a preamble, "please", "let me know", a
+  sign-off), changes a number, a name, a negation ("don't need" -> "need") or who is speaking, or turns a
+  question into a statement, is discarded and the plain transcript is used. The model is only told what
+  kind of text it is (a chat message, an e-mail, a message to an AI assistant), never the window title,
+  which holds contact names and e-mail subjects.
   The model stays in memory (about 2.5 GB of video memory; Settings > Formatting > "Keep the local model
   in memory"), because loading it again takes 5-20 s and dictations are often hours apart. Should Ollama
   have dropped it anyway (it restarts when it updates itself), it is loaded in the background as soon as
   a recording starts and by a check every five minutes, and a clean-up that has not started to answer
   within about 2.5 s (`polish_first_token_s`) is skipped: the plain transcript is inserted at once rather
-  than late.
+  than late. When Ollama's server is gone altogether (its own updater closes it when it installs a new
+  version), FreeFlow starts it again in the background - at the first dictation that finds it missing or
+  at the five-minute check - and dictations made meanwhile go in without the clean-up, without waiting.
 - **Island indicator**: a small round-ended pill sits at the bottom centre of the screen all the time and
   expands with a short animation while you dictate (bars that swing with your voice thanks to automatic
   gain, then dots while transcribing, then a check mark; purple bars mean hands-free). Click it to start
@@ -76,7 +89,8 @@ into whatever app has the cursor.
   while dictating". With several monitors it sits on the monitor of the window in front (the mouse's
   monitor on the desktop) and, during a dictation, on the monitor of the window that gets the text. It
   checks its own window once a second and puts itself back when something hid or moved it ("Show
-  desktop" minimising it, a display change, another window taking the top spot); each repair is logged.
+  desktop" minimising it, a display change, another window taking the top spot). The first repair of
+  each kind is logged, repeats only every ten minutes with a count.
 - **The window in front as a backup**: when a dictation starts, FreeFlow reads the text of the window
   that will receive it through Windows accessibility (locally; nothing is stored or sent) and picks out
   the names on it (the contact on a HubSpot page, the person an e-mail is addressed to, names in the
@@ -94,14 +108,25 @@ into whatever app has the cursor.
 - **Learns how you speak**: corrections become rules. Right after a bad dictation, hold the hotkey and
   say "correction" followed by the right words ("correction: start localhost"): the wrong text is taken
   back (undo, if you have not typed since), the fix is inserted, and "loco host -> localhost" is learned.
+  A few words are enough: "correction: enforced" right after "... very loosely informed." replaces just
+  the word that sounds like it. "Correction" has to fit the previous dictation (made within ten minutes);
+  a sentence that merely starts with the word is inserted as said.
   Fixing the words by typing teaches it too: for a couple of minutes after each insertion FreeFlow reads
   the text box it pasted into (through Windows accessibility, never keystrokes), and once you have
   changed a word of the inserted text and stopped typing for three seconds, or the moment you press
-  Enter to send, the change is learned; text you add is ignored, a further dictation into the same box
-  extends the watched text, and a sent message ends the watch. Dictating the same sentence again also teaches it (a fix seen twice
-  becomes a rule), and any entry under Settings > History can be corrected by hand. Rules are applied to every later transcript, and the learned
-  words are whispered to the speech model so it hears them right in the first place. Settings > Learning
-  lists the rules (heard as / should be / how / used) and lets you remove or add them.
+  Enter to send, the change is noted; text you add is ignored, a further dictation into the same box
+  extends the watched text, and a sent message ends the watch. Dictating the same sentence again works
+  the same way. A typed or re-dictated fix becomes a rule the second time it happens: a real mishearing
+  comes back, while rewording a sentence is a one-off. Any entry under Settings > History can be
+  corrected by hand. Rules are applied to every later transcript in one pass (a rule's result is never
+  changed again by another rule, and "low" never touches "high-low"), and the learned words are
+  whispered to the speech model so it hears them right in the first place. Only fixes that look like
+  mishearings are learned at all: not a change of grammar ("email" -> "emailed"), not added or dropped
+  words, not ordinary English words on both sides ("sides" -> "slides"), and, unless you said
+  "correction", not a single ordinary word that would then change everywhere ("low" -> "lol"). Rules
+  learned before this check existed and failing it were retired once (kept in `learned.json` under
+  "retired" and listed in the log). Settings > Learning lists the rules (heard as / should be / how /
+  used) and lets you remove or add them; a rule you add there yourself is never second-guessed.
 - Tray icon, history, start-with-Windows, crash-safe unmuting.
 
 ## Running it
@@ -134,8 +159,12 @@ it in `%APPDATA%/FreeFlow/update` and restarts. A PC that was asleep at that tim
 found by the daily check waits for a quiet moment: no dictation for ten minutes, no typing for five, no
 settings window, no game in front. Friends can also double-click `Update FreeFlow.bat` in
 their FreeFlow folder, use the tray menu's "Check for updates", or the button in Settings > About
-(where the automatic check can be switched off). A broken update is set aside automatically and the
-built-in code runs.
+(where the automatic check can be switched off). An update whose code does not compile is not
+installed; one that fails to start is set aside automatically (the reason goes to
+`%APPDATA%/FreeFlow/update-failure.log`), the built-in code runs, and that revision is not installed again.
+The restart passes the running FreeFlow's process id to its successor, which closes it and takes over
+(before revision 2026-10-29 the successor stopped at "FreeFlow is already running" and the update only
+took effect at the next sign-in).
 
 `Upgrade-FreeFlow.bat` (a 5 KB batch file, also a release asset) upgrades *any* installation, including
 the first packages that cannot update themselves: it finds the install (folder, running process or the
@@ -147,6 +176,19 @@ name and `FreeFlow-update-latest.zip`), e.g.
 Updates only carry FreeFlow's own code: a new third-party dependency or a new version number needs a
 full package (`build_exe.bat`, then `gh release create v<ver> ...`); the app tells users when that is
 the case and links to the release page.
+
+Before publishing, run the tests: `.venv\Scripts\python.exe tests\run_all.py --all` (see below).
+
+## Tests
+
+`tests/` holds plain Python scripts (no extra packages): `tests\run_all.py` runs the unit tests in a few
+seconds - learning rules, the window-context backup, the AI clean-up checks, the rule-based clean-up, the
+hotkey and clipboard logic with the system calls replaced. `--all` adds the end-to-end checks: the whole app
+with a scripted speech engine against a real text box (`e2e_app.py`), the restart that installs an update
+(`e2e_update_restart.py`), the island on two monitors (`e2e_overlay.py`), the real local model
+(`e2e_ollama.py`), real speech through Whisper (`e2e_audio.py`) and the packaged `FreeFlow.exe` running the
+current code (`exe_checks.py`, which is what tells whether an update is safe to publish). They use their
+own config (hotkey Ctrl+Alt+Shift+F9, no muting) and never touch the FreeFlow that is running.
 
 ## Setup on another PC
 
@@ -170,20 +212,23 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/llm.py` | optional Claude / OpenAI polish |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |
-| `%APPDATA%\FreeFlow\` | `config.json`, `history.jsonl`, `learned.json`, `freeflow.log` |
+| `tests/` | unit and end-to-end tests (`run_all.py`) |
+| `%APPDATA%\FreeFlow\` | `config.json`, `history.jsonl`, `learned.json`, `freeflow.log` (5 MB x 5) |
 
 ## Notes
 
 - Muting works through the Windows audio session API, the same mechanism as the Volume Mixer. Windows
   remembers per-app mute states, so FreeFlow records what it muted and restores it even after a crash
-  (`mute_state.json`).
+  (`mute_state.json`); an app that is not running yet when FreeFlow starts (Discord at sign-in) is
+  unmuted at the next dictation.
 - The speaker mute only touches the *default* playback device, so virtual cables and voice changers
   keep working.
 - Everything runs locally unless you switch on a cloud engine or AI polish in Settings.
 - When Ollama is installed but not running yet, FreeFlow starts `ollama serve` itself in a hidden console
   (never with "no console": Ollama's model runner would then open a console window every time a model
   loads) and keeps retrying for a quarter of an hour after sign-in, since the Ollama tray app usually
-  starts a little later than FreeFlow.
+  starts a little later than FreeFlow. Ollama's own updater closes that server when it installs a new
+  version; FreeFlow notices at the next dictation or within five minutes and starts it again.
 - The keyboard hook runs on a high-priority thread and re-installs itself when Windows called it late
   (a busy game can make Windows drop slow hooks without notice); such late calls are logged as warnings,
   and so is any dictation start that took longer than 0.4 s, with a breakdown of where the time went.

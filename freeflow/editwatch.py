@@ -73,6 +73,9 @@ class EditWatcher:
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._last_key = (0, 0.0)           # (vk, time.monotonic()) of the last real key press
+        self._last_typing_t = 0.0           # ... of the last key that was not Enter
+        self._inspector = focus._Inspector()   # its own thread: a slow read never makes the next dictation's
+                                               # focus check "busy"
         self._prev: Optional[tuple] = None  # (target, element) of the watch that is running
         self.watching = False
         self.last_result = ""               # for tests / diagnostics
@@ -82,6 +85,8 @@ class EditWatcher:
     def key_pressed(self, vk: int, t: Optional[float] = None):
         """Called from the keyboard hook for every real key press (must return at once)."""
         self._last_key = (vk, t or time.monotonic())
+        if vk != VK_RETURN:
+            self._last_typing_t = self._last_key[1]
         if vk == VK_RETURN and self.watching:
             self._wake.set()                # read the box now, before the application acts on the Enter
 
@@ -109,7 +114,7 @@ class EditWatcher:
                 box["el"] = getter()
             return read_element_text(box.get("el"))
         try:
-            value, status = focus._inspector.call(fn, 1.0)
+            value, status = self._inspector.call(fn, 1.0)
         except Exception as e:
             log.debug("edit watch read failed: %s", e)
             return None
@@ -146,7 +151,7 @@ class EditWatcher:
         self.last_result = "watching"
         log.info("Typed fixes: watching %s for changes to %r", self.label or "the box", target[:60])
         learned: set = set()
-        last_region, region_time = target, time.time()
+        last_region, region_time = target, time.monotonic()
         changed_at = 0.0
         presses = self.key_presses()
         end = time.time() + WATCH_SECONDS
@@ -174,9 +179,8 @@ class EditWatcher:
                     region = cur_n
                 if not region:
                     # gone: learn from the last state we saw, if it was seen after the last typing key
-                    # (Enter itself does not count) and had been changed
-                    vk, t_key = self._last_key
-                    fresh = vk == VK_RETURN or region_time >= t_key - 0.05 or woke
+                    # (Enter itself does not count: a box read 0.3 s before the Enter can be half-typed)
+                    fresh = region_time >= self._last_typing_t - 0.05
                     if last_region and last_region != target and fresh:
                         self._learn(target, last_region, learned)
                     self.last_result = "text gone"

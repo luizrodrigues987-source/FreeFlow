@@ -141,6 +141,9 @@ _JARGON = ({re.sub(r"[^a-z0-9]", "", k.lower()) for k in TERM_ALIASES}
            | {re.sub(r"[^a-z0-9]", "", v.lower()) for v in TERM_ALIASES.values()}
            | {re.sub(r"[^a-z0-9]", "", t.lower()) for t in PROMPT_TERMS})
 
+# an alias that must not fire before these words: "alt" is a misheard "ult", but "alt tab" is Alt+Tab
+_TERM_NOT_BEFORE = {"alt": r"(?![\s\-]*(?:tab|f4|key)\b)"}
+
 _CACHE_FILE = "champions.json"
 _DDRAGON = "https://ddragon.leagueoflegends.com"
 _champions: list[str] = list(CHAMPIONS)
@@ -245,6 +248,7 @@ def _fix_terms(text: str) -> str:
     for phrase in sorted(TERM_ALIASES, key=len, reverse=True):
         repl = TERM_ALIASES[phrase]
         pattern = r"(?<![A-Za-z0-9'])" + re.escape(phrase).replace(r"\ ", r"\s+") + r"(?![A-Za-z0-9'])"
+        pattern += _TERM_NOT_BEFORE.get(phrase, "")
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
     return text
 

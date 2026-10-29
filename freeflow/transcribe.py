@@ -178,6 +178,7 @@ class LocalWhisperEngine(Engine):
                 parts, words = self._run(audio, lang, prompt, False)
         if details is not None:
             details["words"] = words
+            details["no_speech"] = self._no_speech
         text = " ".join(p for p in parts if p)
         return text.strip()
 
@@ -191,8 +192,12 @@ class LocalWhisperEngine(Engine):
             initial_prompt=prompt or None, condition_on_previous_text=False, word_timestamps=word_times,
         )
         parts, words = [], []
+        self._no_speech = None
         for seg in segments:
             parts.append(seg.text.strip())
+            p = getattr(seg, "no_speech_prob", None)
+            if p is not None:
+                self._no_speech = p if self._no_speech is None else min(self._no_speech, p)
             for w in (getattr(seg, "words", None) or []):
                 words.append({"word": w.word.strip(), "prob": float(w.probability),
                               "start": float(w.start), "end": float(w.end)})

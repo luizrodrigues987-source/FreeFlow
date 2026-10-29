@@ -2,9 +2,13 @@
 
 A correction can come from
   - the voice command "correction ..." spoken right after a bad dictation, followed by the right words,
-  - dictating the same sentence again within a short time (learned automatically, but only after the
-    same fix has been seen twice, because the second attempt could be the wrong one),
+  - dictating the same sentence again within a short time, or fixing the inserted words by typing
+    (learned automatically, but only once the same fix has been seen twice: a real mishearing comes
+    back, while rewording a sentence is a one-off),
   - editing an entry in Settings > History, or the Learning tab.
+Automatic learning (and the spoken correction) only keeps fixes that look like a mishearing: not a
+change of grammar ("email" -> "emailed"), not added words, not an ordinary English word that would then
+change everywhere ("low" -> "lol" once turned "high-low" into "high-lol"), see rule_problem().
 The wrong and the right text are aligned word by word; every changed span of one to four words becomes
 a rule "wrong phrase -> right phrase" ("loco host" -> "localhost").  Rules are applied to every later
 transcript before the rest of the clean-up, and the right words are added to Whisper's prompt so the
@@ -21,12 +25,14 @@ import time
 from difflib import SequenceMatcher
 from typing import Optional
 
+from .commonwords import EVERYDAY
+
 log = logging.getLogger(__name__)
 
 MAX_SPAN = 4                 # longer changes are rewrites, not corrections
 AUTO_MIN_SIMILARITY = 0.6    # letters of the two spans must be this alike for automatic learning ("John" -> "Jane" is not)
 AUTO_SEEN_TWICE = 2          # a re-dictation fix is learned once it has been seen this often
-CORRECTION_RE = re.compile(r"^\s*(?:correction|correct that|fix that)\b[\s:,.!\-]*(.*)$", re.IGNORECASE | re.DOTALL)
+CORRECTION_RE = re.compile(r"^\s*correction\b[\s:,.!\-]*(.*)$", re.IGNORECASE | re.DOTALL)
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’\-]*|[^\sA-Za-z0-9]")
 
 
@@ -124,6 +130,89 @@ def extract_corrections(wrong: str, right: str, strict: bool = False) -> list[tu
     return out
 
 
+_INFLECTIONS = ("s", "es", "ed", "d", "ing", "er", "ers", "ly", "n", "ns")
+# a change of number, day or month is a change of fact, never a mishearing to fix everywhere
+_FACT_WORDS = set("""zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen
+sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million
+billion first second third fourth fifth sixth seventh eighth ninth tenth half quarter dozen monday tuesday wednesday
+thursday friday saturday sunday january february march april may june july august september october november
+december today tomorrow yesterday tonight morning afternoon evening noon midnight am pm""".split())
+
+
+def _stems(w: str):
+    """The word and what it may be an inflection of (worries -> worry, stopped -> stop)."""
+    yield w
+    for suffix, repl in (("ies", "y"), ("es", ""), ("s", ""), ("ed", ""), ("ed", "e"), ("ing", ""), ("ing", "e"),
+                         ("ly", ""), ("er", ""), ("er", "e")):
+        if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+            stem = w[:len(w) - len(suffix)] + repl
+            yield stem
+            if len(stem) >= 4 and stem[-1] == stem[-2]:
+                yield stem[:-1]
+
+
+def everyday_word(w: str) -> bool:
+    """An ordinary English word (one of the 5,000 most common, or an inflection of one)."""
+    w = re.sub(r"[^a-z]", "", w.lower())
+    return bool(w) and any(s in EVERYDAY or s in COMMON_WORDS for s in _stems(w))
+
+
+def rule_problem(src: str, dst: str, explicit: bool = False) -> Optional[str]:
+    """Why "src -> dst" should NOT become a rule applied to every later dictation (None = it may).
+    A learned rule is global, so only a mishearing qualifies; explicit (the spoken "correction ...")
+    may also replace a single ordinary word, because the user asked for exactly that."""
+    a, b = words(src), words(dst)
+    if not a or not b:
+        return "empty"
+    if len(b) > len(a) or len(a) - len(b) > 1:
+        return "words added or dropped (an edit, not a mishearing)"
+    na, nb = _norm(src), _norm(dst)
+    if na == nb:
+        return None                          # spelling / spacing of the same letters ("free flow" -> "FreeFlow")
+    if re.search(r"\d", src + dst) or any(w.lower() in _FACT_WORDS for w in a + b):
+        return "a number, day or time (a change of fact)"
+    for x, y in ((na, nb), (nb, na)):
+        if y.startswith(x) and y[len(x):] in _INFLECTIONS:
+            return "a change of grammar"
+    if (re.search(r"\d", dst) and not re.search(r"\d", src)) or re.search(r"\b(com|www|https?)\b", dst, re.I):
+        return "typed text (a number or a link)"
+    names = all(w[:1].isupper() for w in a + b)
+    if all(everyday_word(w) for w in a) and all(everyday_word(w) for w in b) and not (
+            explicit and names and sounds_alike(src, dst)):
+        # ("correction: Marc" after "Mark" is a name's spelling, which the user asked for by name)
+        return "ordinary words on both sides (a change of wording)"
+    if not explicit and len(a) == 1 and everyday_word(a[0]):
+        return "an ordinary English word (it would change everywhere)"
+    return None
+
+
+def splice_correction(previous: str, fix: str, max_words: int = 4) -> Optional[str]:
+    """"correction: enforced" right after "... are very loosely informed.": a short fix replaces the part
+    of the previous text that sounds like it, not the whole text.  Returns the repaired text, or None
+    when the fix is long or nothing in the previous text sounds like it."""
+    fw = words(fix)
+    if not fw or len(fw) > max_words or not previous:
+        return None
+    toks = list(re.finditer(r"[A-Za-z0-9][A-Za-z0-9'’\-]*", previous))
+    best = None
+    for n in range(max(1, len(fw) - 1), len(fw) + 2):
+        for i in range(0, len(toks) - n + 1):
+            a, b = toks[i].start(), toks[i + n - 1].end()
+            span = previous[a:b]
+            if _norm(span) == _norm(fix):
+                continue
+            sim = letters_similarity(span, fix)
+            if sim >= 0.6 and sounds_alike(span, fix) and (best is None or sim > best[0]):
+                best = (sim, a, b)
+    if best is None:
+        return None
+    _sim, a, b = best
+    repl = fix.strip().strip(".,;:!?").strip()
+    if previous[a:a + 1].isupper() and repl[:1].islower():
+        repl = repl[:1].upper() + repl[1:]
+    return previous[:a] + repl + previous[b:]
+
+
 def split_correction(text: str) -> Optional[str]:
     """The corrected words when the text is a spoken correction ("correction: start localhost"), else None."""
     m = CORRECTION_RE.match(text or "")
@@ -139,6 +228,7 @@ class Learner:
         self.path = os.path.join(data_dir, "learned.json")
         self.rules: list[dict] = []          # {"from", "to", "learned", "source", "hits"}
         self.candidates: dict[str, dict] = {}   # key -> {"from", "to", "seen", "last"}
+        self.retired: list[dict] = []          # rules taken out of use, with the reason
         self._lock = threading.RLock()
         self._dirty = False
         self.load()
@@ -151,14 +241,48 @@ class Learner:
             with self._lock:
                 self.rules = [r for r in data.get("rules", []) if r.get("from") and r.get("to")]
                 self.candidates = data.get("candidates", {}) or {}
+                self.retired = list(data.get("retired") or [])
+            if not data.get("gate_v2"):
+                self._retire_bad_rules()
         except FileNotFoundError:
             pass
         except Exception as e:
             log.warning("learned.json unreadable (%s); starting empty", e)
 
+    def _retire_bad_rules(self):
+        """Once: rules learned automatically before rule_problem() existed that would not be learned now
+        are taken out of use (kept under "retired" in the file, and logged, so nothing is lost)."""
+        keep, gone = [], []
+        with self._lock:
+            for r in self.rules:
+                src = r.get("source", "")
+                why = None
+                if src in ("typing", "re-dictation"):
+                    why = rule_problem(r["from"], r["to"])
+                elif src == "voice":
+                    why = rule_problem(r["from"], r["to"], explicit=True)
+                if why:
+                    gone.append(dict(r, retired=time.time(), reason=why))
+                else:
+                    keep.append(r)
+            self.rules = keep
+            self.retired = self.retired + gone
+            # the chains the old apply() produced ("Karen -> Kern", "Kern -> Keryn") collapse to one step
+            froms = {r["from"].lower(): r for r in self.rules}
+            for r in self.rules:
+                seen = {r["from"].lower()}
+                nxt = froms.get(r["to"].lower())
+                while nxt is not None and nxt["from"].lower() not in seen:
+                    seen.add(nxt["from"].lower())
+                    r["to"] = nxt["to"]
+                    nxt = froms.get(r["to"].lower())
+        for r in gone:
+            log.info("Retired learned rule %r -> %r (%s; hits %s)", r["from"], r["to"], r["reason"], r.get("hits", 0))
+        self.save()
+
     def save(self):
         with self._lock:                      # one writer at a time (apply() and learn() may overlap)
-            data = {"rules": self.rules, "candidates": self.candidates}
+            data = {"rules": self.rules, "candidates": self.candidates, "retired": self.retired, "gate_v2": True}
             self._dirty = False
             try:
                 os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -176,8 +300,13 @@ class Learner:
             return False
         with self._lock:
             key = src.lower()
-            # the opposite rule (an earlier mistake, or the user changed their mind) goes away
-            self.rules = [r for r in self.rules if not (r["from"].lower() == dst.lower() and r["to"].lower() == key)]
+            # the user just declared dst right: a rule that changes dst (the opposite rule, an earlier
+            # mistake) goes away; one that produced src now produces dst ("Karen -> Kern" + "Kern -> Keryn"
+            # = "Karen -> Keryn", never a chain)
+            self.rules = [r for r in self.rules if r["from"].lower() != dst.lower()]
+            for r in self.rules:
+                if r["to"].lower() == key and r["from"].lower() != dst.lower():
+                    r["to"] = dst
             for r in self.rules:
                 if r["from"].lower() == key:
                     r.update(to=dst, learned=time.time(), source=source)
@@ -201,14 +330,36 @@ class Learner:
         self.save()
 
     def learn(self, wrong: str, right: str, source: str) -> list[tuple[str, str]]:
-        """Explicit correction: every changed span becomes a rule at once."""
-        pairs = extract_corrections(wrong, right, strict=False)
-        added = [(s, d) for s, d in pairs if self.add_rule(s, d, source)]
+        """Explicit correction: every changed span that looks like a mishearing becomes a rule at once
+        (a reworded sentence is still inserted as said, it just teaches nothing)."""
+        added = []
+        for s, d in extract_corrections(wrong, right, strict=False):
+            why = rule_problem(s, d, explicit=True)
+            if why:
+                log.info("Not learned: %r -> %r (%s)", s, d, why)
+            elif len(words(s)) == 1 and len(words(d)) == 1 and s.islower() and d.islower():
+                # one ordinary-looking word for another ("informed" -> "enforced"): a rule would change it
+                # everywhere, so it waits until the same fix comes again
+                self._note([(s, d)], source)
+            elif self.add_rule(s, d, source):
+                added.append((s, d))
         return added
 
-    def learn_auto(self, wrong: str, right: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        """Automatic learning from a re-dictation.  Returns (rules learned now, fixes noted for later)."""
-        pairs = extract_corrections(wrong, right, strict=True)
+    def learn_auto(self, wrong: str, right: str, source: str = "re-dictation"
+                   ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """Automatic learning (re-dictation, typed fix).  Returns (rules learned now, fixes noted for later)."""
+        pairs = [(s, d) for s, d in extract_corrections(wrong, right, strict=True) if not rule_problem(s, d)]
+        return self._note(pairs, source)
+
+    def learn_typed(self, src: str, dst: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """One span the user retyped in the inserted text."""
+        why = rule_problem(src, dst)
+        if why:
+            log.info("Typed edit not learned: %r -> %r (%s)", src, dst, why)
+            return [], []
+        return self._note([(src, dst)], "typing")
+
+    def _note(self, pairs, source: str):
         if not pairs or len(pairs) > 2:
             return [], []
         learned, noted = [], []
@@ -235,7 +386,7 @@ class Learner:
                 for k in oldest:
                     self.candidates.pop(k, None)
         for src, dst in learned:
-            self.add_rule(src, dst, "re-dictation")
+            self.add_rule(src, dst, source)
         if noted:
             self.save()
         return learned, noted
@@ -247,26 +398,35 @@ class Learner:
             return text
         with self._lock:
             rules = sorted(self.rules, key=lambda r: len(r["from"]), reverse=True)
-        changed = False
+        if not rules:
+            return text
+        by_key = {}
         for r in rules:
-            pattern = r"(?<![A-Za-z0-9'])" + re.escape(r["from"]).replace(r"\ ", r"\s+") + r"(?![A-Za-z0-9'])"
+            by_key.setdefault(" ".join(r["from"].lower().split()), r)
+        # one pass over the text with all rules (longest first): a replacement is never replaced again,
+        # and a word inside a compound ("high-low") or a contraction is not a match for "low"
+        alternatives = "|".join(re.escape(r["from"]).replace(r"\ ", r"\s+") for r in rules)
+        pattern = re.compile(r"(?<![A-Za-z0-9'’\-])(?:" + alternatives + r")(?=['’]s\b|(?![A-Za-z0-9'’]|-[A-Za-z0-9]))",
+                             re.IGNORECASE)
+        hit: list = []
 
-            def sub(m, r=r):
-                dst = r["to"]
-                if m.group(0)[:1].isupper() and dst[:1].islower():
-                    dst = dst[:1].upper() + dst[1:]
-                return dst
+        def sub(m):
+            r = by_key.get(" ".join(m.group(0).lower().split()))
+            if r is None:
+                return m.group(0)
+            dst = r["to"]
+            if m.group(0)[:1].isupper() and dst[:1].islower():
+                dst = dst[:1].upper() + dst[1:]
+            hit.append(r)
+            return dst
 
-            new = re.sub(pattern, sub, text, flags=re.IGNORECASE)
-            if new != text:
-                text = new
-                changed = True
-                with self._lock:
+        new = pattern.sub(sub, text)
+        if hit:
+            with self._lock:
+                for r in hit:
                     r["hits"] = int(r.get("hits", 0)) + 1
-                    self._dirty = True
-        if changed and self._dirty:
             self.save()                       # a few kilobytes; the worker thread is not time-critical here
-        return text
+        return new
 
     def vocabulary(self, limit: int = 30) -> list[str]:
         """The learned right phrases for Whisper's prompt, most recently learned first."""

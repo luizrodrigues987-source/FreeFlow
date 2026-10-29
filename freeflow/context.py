@@ -59,6 +59,7 @@ _TOKEN = re.compile(r"[A-Za-z][A-Za-z'’\-]*|[.!?:\n]")
 _WORD = re.compile(r"[A-Za-z][A-Za-z'’\-]*")
 _EMAIL = re.compile(r"([a-z]{2,})[._-]([a-z]{2,})@", re.IGNORECASE)
 _ANY_EMAIL = re.compile(r"\S+@\S+")
+_CODEISH = re.compile(r"\S*[=/?&_#\\]\S*")      # links, query strings, paths, snake_case
 
 
 def _clean(tok: str) -> str:
@@ -143,9 +144,11 @@ def extract_names(text: str, title: str = "") -> list[str]:
 def extract_terms(text: str, title: str = "") -> list[str]:
     """Distinctive words that recur on the page (or appear in its title), most frequent first."""
     counts: dict[str, int] = {}
-    for tok in _WORD.findall(_ANY_EMAIL.sub(" ", text or "")):
-        if not tok[:1].islower():
-            continue                         # capitalised words are names (or sentence starters), not topics
+    plain_text = _CODEISH.sub(" ", _ANY_EMAIL.sub(" ", text or ""))
+    for tok in _WORD.findall(plain_text):
+        if not tok[:1].islower() or any(c.isupper() for c in tok[1:]):
+            continue                         # capitalised words are names (or sentence starters), not topics;
+                                             # camelCase is code
         w = _plain(tok)
         if looks_like_term(w):
             counts[w] = counts.get(w, 0) + 1

@@ -57,6 +57,9 @@ user32.OpenClipboard.argtypes = [wt.HWND]
 user32.OpenClipboard.restype = wt.BOOL
 user32.CloseClipboard.restype = wt.BOOL
 user32.EmptyClipboard.restype = wt.BOOL
+user32.GetClipboardSequenceNumber.restype = wt.DWORD
+user32.RegisterClipboardFormatW.argtypes = [wt.LPCWSTR]
+user32.RegisterClipboardFormatW.restype = wt.UINT
 user32.GetClipboardData.argtypes = [wt.UINT]
 user32.GetClipboardData.restype = wt.HANDLE
 user32.SetClipboardData.argtypes = [wt.UINT, wt.HANDLE]
@@ -306,14 +309,40 @@ def clipboard_has_non_text() -> bool:
         user32.CloseClipboard()
 
 
-def clipboard_set_text(text: str) -> bool:
-    data = text.encode("utf-16-le") + b"\x00\x00"
+_PRIVATE_FORMATS: Optional[list] = None
+
+
+def _private_formats() -> list:
+    """Clipboard formats that keep an entry out of Win+V history, the cloud clipboard and clipboard
+    managers: a dictation that is pasted and then replaced by the old content is nobody's business."""
+    global _PRIVATE_FORMATS
+    if _PRIVATE_FORMATS is None:
+        names = ("ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory",
+                 "CanUploadToCloudClipboard")
+        _PRIVATE_FORMATS = [f for f in (user32.RegisterClipboardFormatW(n) for n in names) if f]
+    return _PRIVATE_FORMATS
+
+
+def _global_bytes(data: bytes):
     h = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
     if not h:
-        return False
+        return None
     p = kernel32.GlobalLock(h)
+    if not p:
+        kernel32.GlobalFree(h)
+        return None
     ctypes.memmove(p, data, len(data))
     kernel32.GlobalUnlock(h)
+    return h
+
+
+def clipboard_set_text(text: str, private: bool = False) -> bool:
+    """Put text on the clipboard (Windows line ends: classic text boxes show a bare LF as nothing).
+    private: also mark it so clipboard history / cloud clipboard / managers skip it."""
+    text = text.replace("\r\n", "\n").replace("\n", "\r\n")
+    h = _global_bytes(text.encode("utf-16-le") + b"\x00\x00")
+    if not h:
+        return False
     if not _open_clipboard():
         kernel32.GlobalFree(h)
         return False
@@ -322,25 +351,55 @@ def clipboard_set_text(text: str) -> bool:
         if not user32.SetClipboardData(CF_UNICODETEXT, h):
             kernel32.GlobalFree(h)
             return False
+        if private:
+            for fmt in _private_formats():
+                hz = _global_bytes(b"\x00\x00\x00\x00")
+                if hz and not user32.SetClipboardData(fmt, hz):
+                    kernel32.GlobalFree(hz)
         return True
     finally:
         user32.CloseClipboard()
 
 
+# a paste's restore that has not happened yet: the next paste takes over its "previous" (the user's own
+# clipboard) instead of saving our dictation as "previous", and the older restore is dropped
+_restore_lock = threading.Lock()
+_restore_gen = 0
+_waiting_previous: Optional[str] = None
+
+
 def paste_text(text: str, restore: bool = True, restore_delay_ms: int = 500, slow: bool = False) -> bool:
-    """Put text on the clipboard, send Ctrl+V, then restore the previous clipboard text."""
-    previous = clipboard_get_text() if restore else None
+    """Put text on the clipboard, send Ctrl+V, then restore the previous clipboard text - unless the
+    clipboard changed in the meantime (the user copied something) or a newer paste took over."""
+    global _restore_gen, _waiting_previous
+    with _restore_lock:
+        _restore_gen += 1
+        gen = _restore_gen
+        if _waiting_previous is not None:
+            previous = _waiting_previous            # the user's clipboard from before the earlier paste
+        else:
+            previous = clipboard_get_text() if restore else None
+        _waiting_previous = previous if restore else None
     if restore and previous is None and clipboard_has_non_text():
         log.info("Clipboard held non-text data; it will not be restored after pasting")
-    if not clipboard_set_text(text):
+    if not clipboard_set_text(text, private=restore):
         log.error("Could not write to the clipboard")
         return False
+    seq = user32.GetClipboardSequenceNumber()
     time.sleep(0.03)
     send_ctrl_v(slow)
     if restore and previous is not None:
         def _restore():
+            global _waiting_previous
             time.sleep(max(0.1, restore_delay_ms / 1000.0))
-            clipboard_set_text(previous)
+            with _restore_lock:
+                if gen != _restore_gen:
+                    return                          # a newer paste restores instead
+                _waiting_previous = None
+                if user32.GetClipboardSequenceNumber() != seq:
+                    log.info("Clipboard changed after the paste; leaving it as it is")
+                    return
+                clipboard_set_text(previous, private=True)
         threading.Thread(target=_restore, name="clipboard-restore", daemon=True).start()
     return True
 

@@ -46,6 +46,8 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
 
 HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
 
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wt.HINSTANCE, wt.DWORD]
 user32.SetWindowsHookExW.restype = wt.HHOOK
 user32.CallNextHookEx.argtypes = [wt.HHOOK, ctypes.c_int, wt.WPARAM, wt.LPARAM]
@@ -380,6 +382,11 @@ class HotkeyManager:
         dummy = False
         with self._lock:
             if down:
+                # a key released where the hook cannot see it (lock screen, Ctrl+Alt+Del, UAC prompt, a
+                # stretch when Windows dropped the hook) would stay "held" for ever and make a single key
+                # fire the hotkey: drop whatever the system no longer reports as down
+                for v in [v for v in self.pressed if v != vk and not (user32.GetAsyncKeyState(v) & 0x8000)]:
+                    self.pressed.discard(v)
                 if vk not in self.pressed and vk not in self.combo_vks and vk not in MODIFIER_VKS:
                     self.presses += 1     # lets the app know whether the user typed since its last insertion
                 self.pressed.add(vk)

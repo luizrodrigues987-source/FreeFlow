@@ -42,7 +42,7 @@ try {
   if (Get-Process FreeFlow -ErrorAction SilentlyContinue) {
     Write-Host ' Closing FreeFlow...'
     if (Test-Path $exe) { Start-Process $exe -ArgumentList '--quit' -WindowStyle Hidden -ErrorAction SilentlyContinue }
-    Start-Sleep 4
+    for ($i = 0; $i -lt 30 -and (Get-Process FreeFlow -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
     Get-Process FreeFlow -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   }
   $tmp = Join-Path $env:TEMP 'FreeFlow-upgrade'

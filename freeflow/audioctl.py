@@ -112,6 +112,7 @@ def restore_after_crash() -> list[str]:
     co_init()
     done = []
     dev_id = state.get("output_device_id")
+    keep_output = None
     if dev_id:
         try:
             dev = _enumerator().GetDevice(dev_id)
@@ -120,20 +121,44 @@ def restore_after_crash() -> list[str]:
                 vol.SetMute(0, None)
                 done.append("speakers")
         except Exception as e:
-            log.warning("Crash-restore of speakers failed: %s", e)
-    for entry in state.get("mic_sessions") or []:
-        try:
-            for s in capture_sessions():
-                if s["device_id"] == entry.get("device_id") and _normalize_exe(s["process"]) == _normalize_exe(entry.get("process", "")):
-                    if s["volume"].GetMute():
-                        s["volume"].SetMute(0, None)
-                        done.append(f"mic:{s['process']}")
-        except Exception as e:
-            log.warning("Crash-restore of mic session failed: %s", e)
-    _write_state({"output_device_id": None, "mic_sessions": None})
+            keep_output = dev_id                 # unplugged right now: try again next time
+            log.warning("Crash-restore of speakers failed (will retry): %s", e)
+    # a session that is not there yet (FreeFlow starts before Discord at sign-in) is retried at every
+    # dictation: the mute is remembered by Windows for that app, so it must not be forgotten here
+    left = list(state.get("mic_sessions") or []) + list(state.get("leftover_mic_sessions") or [])
+    remaining = unmute_leftovers(left, done)
+    _write_state({"output_device_id": keep_output, "mic_sessions": None, "leftover_mic_sessions": remaining or None})
     if done:
         log.warning("Restored mutes left over from a previous run: %s", done)
     return done
+
+
+def unmute_leftovers(entries: list, done: Optional[list] = None) -> list:
+    """Unmute the app microphone sessions a crashed run left muted; returns the entries not found yet."""
+    if not entries:
+        return []
+    try:
+        sessions = capture_sessions()
+    except Exception as e:
+        log.warning("Could not enumerate microphone sessions: %s", e)
+        return entries
+    remaining = []
+    for entry in entries:
+        found = False
+        for s in sessions:
+            if s["device_id"] == entry.get("device_id") and _normalize_exe(s["process"]) == _normalize_exe(entry.get("process", "")):
+                found = True
+                try:
+                    if s["volume"].GetMute():
+                        s["volume"].SetMute(0, None)
+                        if done is not None:
+                            done.append(f"mic:{s['process']}")
+                        log.info("Unmuted the microphone of %s, left muted by an earlier run", s["process"])
+                except Exception as e:
+                    log.warning("Could not unmute %s: %s", s["process"], e)
+        if not found:
+            remaining.append(entry)
+    return remaining
 
 
 # --------------------------------------------------------------------------
@@ -308,6 +333,9 @@ class MicSessionMuter:
         if mode not in ("list", "all"):
             return []
         co_init()
+        leftovers = _read_state().get("leftover_mic_sessions")
+        if leftovers:                            # from a crashed run, for an app that was not running then
+            _write_state({"leftover_mic_sessions": unmute_leftovers(leftovers) or None})
         wanted = {_normalize_exe(a) for a in apps if a.strip()}
         my_pid = os.getpid()
         names = []
@@ -347,7 +375,9 @@ class MicSessionMuter:
                 log.warning("Unmute via cached session failed for %s (%s); re-scanning", m["process"], e)
             try:
                 for s in capture_sessions():
-                    if s["device_id"] == m["device_id"] and s["pid"] == m["pid"] and s["muted"]:
+                    # by name, not pid: Discord may have restarted (a new process) while we dictated
+                    if s["device_id"] == m["device_id"] and _normalize_exe(s["process"]) == _normalize_exe(m["process"]) \
+                            and s["muted"]:
                         s["volume"].SetMute(0, None)
             except Exception as e2:
                 log.error("Could not unmute mic for %s: %s", m["process"], e2)
