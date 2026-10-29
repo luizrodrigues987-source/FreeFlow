@@ -276,6 +276,14 @@ def capitalize_first(text: str) -> str:
     return text
 
 
+_SCRATCH = {"scratch that", "undo that"}
+
+
+def is_scratch_command(text: str) -> bool:
+    """The whole dictation is "scratch that" / "undo that": take back the last dictation."""
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (text or "").lower())).strip() in _SCRATCH
+
+
 def looks_like_hallucination(text: str, rms: float, duration: float = 99.0, no_speech: float = None) -> bool:
     """Whisper's stock phrases for (near) silence, e.g. 'Thank you.' on a 0.4 s accidental tap.  Not the
     loudness alone: a webcam microphone records clear speech at rms 0.005-0.02, and "Thanks!" or "Okay."

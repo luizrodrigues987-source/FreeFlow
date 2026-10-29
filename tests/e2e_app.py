@@ -112,6 +112,9 @@ SCENES = [
     (CLAUDE, "correction, enforced.", "Privacy laws are very loosely enforced.", "paste", {"undo": True}),
     (CLAUDE, "correction the call is at 3 not 2", "Correction the call is at 3 not 2", "paste", {}),
     (GONE, "see you there", None, "clipboard", {}),
+    (CLAUDE, "hello there my friend", "Hello there my friend", "paste", {}),
+    (CLAUDE, "Scratch that.", None, "scratch", {}),                      # takes "Hello there..." back
+    (CLAUDE, "scratch that", None, "scratch-refused", {}),               # nothing left to take back
 ]
 box = {"i": 0, "prompts": [], "again": []}
 
@@ -130,6 +133,21 @@ def fake_transcribe(self, audio, language="en", prompt=None, details=None):
 
 
 transcribe.LocalWhisperEngine.load = lambda self: self.ready.set()
+
+
+class ScratchLog:
+    """Counts the "Scratch that" outcomes in the app's log, so the driver knows a silent scene is done."""
+    import logging as _logging
+
+    class H(_logging.Handler):
+        def emit(self, record):
+            msg = record.getMessage()
+            if msg.startswith("Scratch that:"):
+                box["scratched"] = box.get("scratched", 0) + 1
+                box.setdefault("scratch_log", []).append("took back" if "took back" in msg else "nothing taken back")
+
+
+ScratchLog._logging.getLogger("freeflow.app").addHandler(ScratchLog.H())
 transcribe.LocalWhisperEngine.transcribe = fake_transcribe
 captured = []
 fg = {"info": SCENES[0][0]}
@@ -164,10 +182,15 @@ def driver():
         time.sleep(1.2)
         a.request("deactivate", time.monotonic())
         end = time.monotonic() + 15
-        while time.monotonic() < end and not any(c[0] in ("inject", "clipboard") for c in captured[before:]):
+        quiet = scene[3].startswith("scratch")                 # inserts nothing: wait for the log line instead
+        while time.monotonic() < end and not (
+                any(c[0] in ("inject", "clipboard") for c in captured[before:]) or
+                (quiet and box.get("scratched", 0) > sum(1 for x in SCENES[:SCENES.index(scene)] if x[3].startswith("scratch")))):
             time.sleep(0.05)
         time.sleep(0.3)
     box["rules"] = [(r["from"], r["to"]) for r in a.learner.rules]
+    a._last_dictation = {"text": "Copy me again."}               # tray menu: "Copy last dictation"
+    a.copy_last_dictation()
     a.ui(a.quit)
 
 
@@ -178,9 +201,12 @@ app.run()
 
 print("CAPTURED:", captured)
 print("RULES:", box["rules"], "| SECOND LISTENS:", box["again"])
+copied = captured.pop() if captured else None                                  # the tray "Copy last dictation"
+assert copied == ("clipboard", "Copy me again."), copied
 outs = [c for c in captured if c[0] in ("inject", "clipboard")]
-assert len(outs) == len(SCENES), (len(outs), len(SCENES))
-for k, (fgi, spoken, expect, method, extra) in enumerate(SCENES):
+inserting = [sc for sc in SCENES if not sc[3].startswith("scratch")]
+assert len(outs) == len(inserting), (len(outs), len(inserting))
+for k, (fgi, spoken, expect, method, extra) in enumerate(inserting):
     kind = outs[k][0] if method == "clipboard" else outs[k][2]
     assert kind == method, (k, outs[k], method)
     if expect is not None:
@@ -188,9 +214,11 @@ for k, (fgi, spoken, expect, method, extra) in enumerate(SCENES):
 assert captured[0] == ("enter",), captured[:2]                                  # game: Enter first
 assert box["prompts"][0].endswith("gank, Bora."), box["prompts"][0][-40:]       # game words + own word
 undos = [i for i, c in enumerate(captured) if c == ("undo",)]
-assert len(undos) == 2, captured                                                # both corrections took the text back
+assert len(undos) == 3, captured                     # both corrections and the first "scratch that" took text back
+assert captured[-1] == ("undo",), captured[-3:]                                 # the last step was that undo
+assert box.get("scratch_log") == ["took back", "nothing taken back"], box.get("scratch_log")
 assert ("loco host", "localhost") in box["rules"], box["rules"]
 assert not any(w in p for p in box["prompts"] for w in ("Miren", "pavers", "Kirsty")), "window words stay out"
 assert box["again"] == [4, 5, 7], box["again"]                                  # second listens only when in doubt
-assert outs[-1] == ("clipboard", "See you there "), outs[-1]                    # closed window: clipboard, no paste
+assert ("clipboard", "See you there ") in outs, outs                            # closed window: clipboard, no paste
 print("E2E APP OK")

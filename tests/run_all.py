@@ -17,7 +17,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
-E2E = ["e2e_app.py", "e2e_update_restart.py", "e2e_overlay.py", "e2e_ollama.py", "e2e_audio.py", "exe_checks.py"]
+E2E = ["e2e_app.py", "e2e_settings.py", "e2e_update_restart.py", "e2e_overlay.py", "e2e_ollama.py", "e2e_audio.py", "exe_checks.py"]
 
 
 def main():

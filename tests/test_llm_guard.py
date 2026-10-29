@@ -1,7 +1,8 @@
 """The checks every AI clean-up passes before it replaces the transcript (no model needed: the outputs here
 are ones the local model really produced, or cases built to the same pattern)."""
 from _util import case, run
-from freeflow.llm import _tidy_output, build_system, changed_meaning, describe_app
+from freeflow.config import DEFAULTS
+from freeflow.llm import _tidy_output, app_kind, build_system, changed_meaning, describe_app, style_for
 
 MUST_REJECT = [
     # it answered the question instead of cleaning it
@@ -80,6 +81,17 @@ def the_model_never_sees_window_titles():
     assert describe_app("chrome.exe", "Some page") == ""
     system = build_system("clean", describe_app("Slack.exe", "Kirsty Moreau (DM) - Slack"), local=True)
     assert "Kirsty" not in system and "chat message" in system
+
+
+@case
+def style_per_kind_of_app():
+    assert app_kind("Slack.exe", "general - Slack") == "chat" and style_for(DEFAULTS, "Slack.exe") == "casual"
+    assert style_for(DEFAULTS, "chrome.exe", "Deal - HubSpot - Google Chrome") == "formal"
+    assert style_for(DEFAULTS, "claude.exe", "Claude") == "light"
+    assert style_for(DEFAULTS, "chrome.exe", "Weather") == "clean"                     # other: the general style
+    cfg = dict(DEFAULTS, polish_style="casual", polish_style_per_app={"chat": "", "ai": "formal"})
+    assert style_for(cfg, "Slack.exe") == "casual" and style_for(cfg, "claude.exe") == "formal"
+    assert "Change as little as possible" in build_system("light", "", local=True)
 
 
 if __name__ == "__main__":

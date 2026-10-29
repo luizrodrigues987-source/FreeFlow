@@ -52,7 +52,8 @@ into whatever app has the cursor.
   only react to real keystrokes, add the exe under "Always type in" and FreeFlow types with hardware scan codes. A game running
   as administrator hides its keystrokes from FreeFlow unless FreeFlow runs as administrator too; the
   indicator is not visible over exclusive-fullscreen games.
-- Settings are saved when you click Apply or close the window.
+- Settings are saved when you click Apply or close the window. The window grows with Windows' display
+  scaling (125-200%) but never beyond the screen; pages that do not fit scroll.
 - **Local transcription** with faster-whisper (`large-v3-turbo` on the RTX 3070, about 0.3 s per sentence).
   Optional cloud engines (OpenAI, Groq) if you ever want them.
 - **Mutes your speakers while you dictate** and unmutes them when you stop. Skips the mute automatically
@@ -68,6 +69,10 @@ into whatever app has the cursor.
   Ollama (Qwen 2.5 3B by default, Gemma 3 4B also installed) turns run-on speech into punctuated sentences
   and paragraphs and drops repeated words and false starts, in well under a second on the GPU.
   On by default when Ollama is installed ("Auto"); Claude or OpenAI can be used instead with an API key.
+  The style depends on where the text goes (Settings > Formatting > "Style per kind of app"): chat
+  messages (Slack, Discord, Teams) casual, e-mails and CRM notes (Gmail, Outlook, HubSpot) formal,
+  messages to AI assistants (Claude, ChatGPT, code editors) a light touch - punctuation and fillers only,
+  every word kept - and everything else the general style.
   Every result is checked before use: a rewrite that changes the length a lot, drops content words,
   adds words of its own (an answer to a question you dictated, a preamble, "please", "let me know", a
   sign-off), changes a number, a name, a negation ("don't need" -> "need") or who is speaking, or turns a
@@ -127,6 +132,11 @@ into whatever app has the cursor.
   learned before this check existed and failing it were retired once (kept in `learned.json` under
   "retired" and listed in the log). Settings > Learning lists the rules (heard as / should be / how /
   used) and lets you remove or add them; a rule you add there yourself is never second-guessed.
+- **"Scratch that"**: dictated on its own, it takes the last dictation back (undo), as long as you have
+  not typed since, are still in the same window and it is less than three minutes old. A "scratch that"
+  inside a sentence ("Friday, scratch that, Monday") is a self-correction for the AI clean-up instead.
+- **Copy last dictation** (tray menu): the last dictation goes on the clipboard again, for when it landed
+  in the wrong place.
 - Tray icon, history, start-with-Windows, crash-safe unmuting.
 
 ## Running it
@@ -170,6 +180,14 @@ took effect at the next sign-in).
 the first packages that cannot update themselves: it finds the install (folder, running process or the
 start-up entry), downloads the latest full package from GitHub, mirrors it into place and restarts.
 
+Updates are signed. `build_update.py` signs every zip with an Ed25519 key kept outside the project at
+`%USERPROFILE%\.freeflow\update-signing.key` (`freeflow/signing.py`, plain Python because the packaged
+exe has no crypto library), and installed copies accept an update only when the signature matches
+`UPDATE_PUBLIC_KEY` in `freeflow/updater.py` - a hijacked download link or a changed `update_url` cannot
+make them run other code. **Back that key file up** (password manager, USB stick): without it no further
+update can be installed by anyone, only a new full package would help. The build refuses to run when
+the key is missing or does not match; `build_update.py --new-key` creates one for a new set-up.
+
 To publish an update: run `build_update.bat`, then upload the zip to the release twice (its revisioned
 name and `FreeFlow-update-latest.zip`), e.g.
 `gh release upload v1.1.0 dist\FreeFlow-update-r<rev>.zip dist\FreeFlow-update-latest.zip --clobber`.
@@ -209,7 +227,8 @@ including the CUDA libraries. The speech model (about 1.6 GB) is downloaded auto
 | `freeflow/learning.py` | learned corrections: "correction ..." command, re-dictations, History edits -> rules + Whisper vocabulary |
 | `freeflow/editwatch.py` | watches the text box after an insertion (UI Automation) and learns words fixed by typing |
 | `freeflow/context.py`, `commonwords.py` | names and topic words of the window in front: a backup for doubtful words, confirmed by a second listen |
-| `freeflow/llm.py` | optional Claude / OpenAI polish |
+| `freeflow/llm.py` | AI clean-up (local Ollama, Claude, OpenAI), its checks, style per kind of app |
+| `freeflow/updater.py`, `signing.py` | signed code updates from the GitHub release (Ed25519) |
 | `freeflow/inject.py` | clipboard paste or keystroke typing into the focused app |
 | `freeflow/overlay.py`, `tray.py`, `settings_ui.py` | UI |
 | `tests/` | unit and end-to-end tests (`run_all.py`) |

@@ -13,7 +13,7 @@ from tkinter import messagebox, ttk
 from . import APP_VERSION, audioctl, autostart
 from .config import DATA_DIR, LOG_PATH
 from .hotkeys import parse_combo, pretty_combo
-from .llm import CLAUDE_MODELS
+from .llm import APP_KINDS, CLAUDE_MODELS, STYLE_NAMES
 from .llm import LOCAL_MODELS as LLM_MODELS
 from .recorder import default_input_name, list_input_devices
 from .transcribe import LOCAL_MODELS, MODEL_NOTES
@@ -33,8 +33,7 @@ class SettingsWindow(tk.Toplevel):
         self.app = app
         self.cfg = app.cfg
         self.title("FreeFlow Settings")
-        self.geometry("860x720")
-        self.minsize(760, 600)
+        self._fit_to_screen(860, 720, 700, 520)
         try:
             self.iconbitmap(autostart.icon_path())
         except Exception:
@@ -62,8 +61,11 @@ class SettingsWindow(tk.Toplevel):
                               ("Transcription", self._build_transcription), ("Formatting", self._build_formatting),
                               ("Learning", self._build_learning), ("History", self._build_history),
                               ("About", self._build_about)]:
-            frame = ttk.Frame(self.nb, padding=12)
-            self.nb.add(frame, text=name)
+            if name in ("History", "Learning"):          # these fill the window with a list of their own
+                frame = ttk.Frame(self.nb, padding=12)
+                self.nb.add(frame, text=name)
+            else:
+                frame = self._scrolling_tab(name)
             self.tabs[name] = frame
             builder(frame)
         if tab:
@@ -74,6 +76,60 @@ class SettingsWindow(tk.Toplevel):
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+    def _fit_to_screen(self, w: int, h: int, min_w: int, min_h: int):
+        """The sizes are for a 100% display; at 125-200% scaling the fonts grow, so the window grows with
+        them - but never beyond the screen it opens on (a 1080p laptop at 150% has room for about 1250 x 680
+        unscaled pixels): what does not fit scrolls."""
+        try:
+            scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
+        except tk.TclError:
+            scale = 1.0
+        w, h, min_w, min_h = (int(v * scale) for v in (w, h, min_w, min_h))
+        try:
+            from .overlay import work_area
+            left, top, right, bottom = work_area(0) or (0, 0, self.winfo_screenwidth(), self.winfo_screenheight())
+        except Exception:
+            left, top, right, bottom = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+        room_w, room_h = right - left - 40, bottom - top - 40
+        w, h = min(w, room_w), min(h, room_h)
+        self.minsize(min(min_w, w), min(min_h, h))
+        self.geometry(f"{w}x{h}+{left + (right - left - w) // 2}+{top + max(0, (bottom - top - h) // 2)}")
+
+    def _scrolling_tab(self, name: str) -> ttk.Frame:
+        """A notebook page whose content scrolls when the window is smaller than the page."""
+        outer = ttk.Frame(self.nb)
+        self.nb.add(outer, text=name)
+        try:
+            bg = ttk.Style().lookup("TFrame", "background") or None
+        except tk.TclError:
+            bg = None
+        canvas = tk.Canvas(outer, highlightthickness=0, bd=0, **({"background": bg} if bg else {}))
+        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas, padding=12)
+        item = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=bar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def update(_event=None):
+            canvas.configure(scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
+            if inner.winfo_reqheight() > canvas.winfo_height() > 1:
+                if not bar.winfo_ismapped():
+                    bar.pack(side="right", fill="y", before=canvas)
+            elif bar.winfo_ismapped():
+                bar.pack_forget()
+                canvas.yview_moveto(0)
+
+        def wheel(event):
+            if bar.winfo_ismapped():
+                canvas.yview_scroll(int(-event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+
+        inner.bind("<Configure>", update)
+        canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(item, width=e.width), update()))
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        inner._scroll_canvas = canvas                    # for tests
+        return inner
+
     def _var(self, key: str, kind=str) -> tk.Variable:
         val = self.cfg.get(key)
         if kind is bool:
@@ -337,8 +393,20 @@ class SettingsWindow(tk.Toplevel):
         self._label(f, "Style", r)
         svar = self._var("polish_style")
         box = ttk.Frame(f); box.grid(row=r, column=1, sticky="w")
-        for val, txt in [("clean", "As spoken, just cleaned"), ("formal", "Formal"), ("casual", "Casual")]:
-            ttk.Radiobutton(box, text=txt, variable=svar, value=val).pack(side="left", padx=(0, 10))
+        for val in ("clean", "formal", "casual", "light"):
+            ttk.Radiobutton(box, text=STYLE_NAMES[val], variable=svar, value=val).pack(side="left", padx=(0, 10))
+        r += 1
+        ttk.Label(f, text="Style per kind of app").grid(row=r, column=0, sticky="nw", padx=(0, 10), pady=3)
+        per = self.cfg.get("polish_style_per_app") or {}
+        grid = ttk.Frame(f); grid.grid(row=r, column=1, sticky="w")
+        names = ["Same as above"] + [STYLE_NAMES[k] for k in ("clean", "casual", "formal", "light")]
+        self._style_vars = {}
+        for i, (kind, label) in enumerate(APP_KINDS):
+            ttk.Label(grid, text=label).grid(row=i, column=0, sticky="w", padx=(0, 8), pady=1)
+            var = tk.StringVar(value=STYLE_NAMES.get(per.get(kind) or "", "Same as above"))
+            ttk.Combobox(grid, textvariable=var, values=names, state="readonly", width=30).grid(row=i, column=1,
+                                                                                               sticky="w", pady=1)
+            self._style_vars[kind] = var
         r += 1
         self._label(f, "Anthropic API key", r); self._entry(f, "anthropic_api_key", r, width=48, show="•"); r += 1
         self._label(f, "Claude model", r); self._combo(f, "claude_model", CLAUDE_MODELS, r, width=22, state="normal"); r += 1
@@ -707,6 +775,8 @@ class SettingsWindow(tk.Toplevel):
         from .llm import normalize_ollama_url
         data["ollama_url"] = normalize_ollama_url(data["ollama_url"])
         data["ollama_model"] = data["ollama_model"] or LLM_MODELS[0]
+        to_key = {v: k for k, v in STYLE_NAMES.items()}
+        data["polish_style_per_app"] = {kind: to_key.get(var.get(), "") for kind, var in self._style_vars.items()}
         return data
 
     def save(self) -> bool:

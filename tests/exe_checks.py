@@ -41,6 +41,35 @@ def spoken_clip() -> str:
 if not os.path.exists(EXE):
     print("SKIPPED: no packaged build in dist/FreeFlow (python build_exe.py)")
     sys.exit(0)
+
+
+def selftest(label: str) -> tuple:
+    cfg = os.path.join(tempfile.mkdtemp(prefix="ff-exe-"), "config.json")
+    json.dump({"first_run_done": True, "notifications": False, "sounds": False, "polish": "off", "auto_update": False,
+               "hotkey": "ctrl+alt+shift+f9", "mute_output": False, "mute_mic_mode": "off"}, open(cfg, "w"))
+    os.makedirs(DATA, exist_ok=True)
+    start = os.path.getsize(LOG) if os.path.exists(LOG) else 0
+    p = subprocess.run([EXE, "--selftest", spoken_clip()], env=dict(os.environ, FREEFLOW_CONFIG=cfg),
+                       cwd=os.path.dirname(EXE), timeout=300)
+    with open(LOG, encoding="utf-8", errors="replace") as f:
+        f.seek(start)
+        seen = f.read()
+    print(f"-- {label}")
+    for line in seen.splitlines():
+        if any(k in line for k in ("Self-test", "word timing", "Traceback", "ERROR")):
+            print("  " + line[24:300])
+    return p.returncode, seen
+
+
+# 1) the package's own (bundled) code, with no update staged - if it is new enough to have --selftest
+shutil.rmtree(UPD, ignore_errors=True)
+bundled_app = open(os.path.join(ROOT, "dist", "FreeFlow", "source", "freeflow", "app.py"), encoding="utf-8").read()
+if "def selftest(" in bundled_app:
+    code, seen = selftest("bundled code")
+    bundled_ok = code == 0 and "from bundled" in seen and "word timing failed" not in seen
+else:
+    print("-- bundled code: built before --selftest existed; only the update path is checked")
+    bundled_ok = True
 bundled = open(os.path.join(ROOT, "dist", "FreeFlow", "source", "freeflow", "__init__.py"), encoding="utf-8").read()
 rev = int(re.search(r"CODE_REVISION\s*=\s*(\d+)", bundled).group(1)) + 9
 shutil.rmtree(UPD, ignore_errors=True)
@@ -50,25 +79,55 @@ for py in glob.glob(os.path.join(ROOT, "freeflow", "*.py")):
     if os.path.basename(py) == "__init__.py":
         data = re.sub(r"CODE_REVISION\s*=\s*\d+", f"CODE_REVISION = {rev}", data)
     open(os.path.join(UPD, "freeflow", os.path.basename(py)), "w", encoding="utf-8", newline="\n").write(data)
-cfg = os.path.join(tempfile.mkdtemp(prefix="ff-exe-"), "config.json")
-json.dump({"first_run_done": True, "notifications": False, "sounds": False, "polish": "off", "auto_update": False,
-           "hotkey": "ctrl+alt+shift+f9", "mute_output": False, "mute_mic_mode": "off"}, open(cfg, "w"))
-os.makedirs(DATA, exist_ok=True)
-start = os.path.getsize(LOG) if os.path.exists(LOG) else 0
+# 2) the current code as a (newer) update
 t0 = time.time()
-p = subprocess.run([EXE, "--selftest", spoken_clip()], env=dict(os.environ, FREEFLOW_CONFIG=cfg),
-                   cwd=os.path.dirname(EXE), timeout=300)
-with open(LOG, encoding="utf-8", errors="replace") as f:
-    f.seek(start)
-    seen = f.read()
-for line in seen.splitlines():
-    if any(k in line for k in ("starting", "Self-test", "Model ready", "word timing", "Traceback", "ERROR")):
-        print("  " + line[24:400])
+code, seen = selftest("current code as an update")
 staged_used = f"Self-test: code r{rev} from update folder" in seen
 shutil.rmtree(UPD, ignore_errors=True)
 for d in glob.glob(UPD + ".broken-*"):
     shutil.rmtree(d, ignore_errors=True)
-ok = p.returncode == 0 and staged_used and "Self-test:" in seen and "word timing failed" not in seen
-print("exit code %s after %.0f s; update code used: %s" % (p.returncode, time.time() - t0, staged_used))
+ok = bundled_ok and code == 0 and staged_used and "word timing failed" not in seen
+
+
+def stage(rev_, patch_app=None):
+    shutil.rmtree(UPD, ignore_errors=True)
+    os.makedirs(os.path.join(UPD, "freeflow"))
+    for py in glob.glob(os.path.join(ROOT, "freeflow", "*.py")):
+        text = open(py, encoding="utf-8").read()
+        name = os.path.basename(py)
+        if name == "__init__.py":
+            text = re.sub(r"CODE_REVISION\s*=\s*\d+", f"CODE_REVISION = {rev_}", text)
+        if name == "app.py" and patch_app:
+            text = patch_app(text)
+        open(os.path.join(UPD, "freeflow", name), "w", encoding="utf-8", newline="\n").write(text)
+
+
+# 3) a package with the 2026-10-29 loader: a broken update - failing to import, or crashing right after the
+#    start - must fall back to the built-in code, leave the reason in update-failure.log and be set aside
+new_loader = "broken_revisions" in open(os.path.join(ROOT, "dist", "FreeFlow", "source", "freeflow", "updater.py"),
+                                        encoding="utf-8").read()
+if new_loader:
+    fail_log = os.path.join(DATA, "update-failure.log")
+    for label, patch_app in (
+            ("update that does not import", lambda t: t.replace("from .tray import Tray", "from .tray import NoSuchName")),
+            ("update that crashes at start", lambda t: t.replace('    """--selftest [file.wav]:',
+                                                                  '    raise RuntimeError("broken on purpose")\n    """--selftest [file.wav]:', 1))):
+        if os.path.exists(fail_log):
+            os.remove(fail_log)
+        for d in glob.glob(UPD + ".broken-*"):
+            shutil.rmtree(d, ignore_errors=True)
+        stage(rev + 1, patch_app)
+        code3, seen3 = selftest(label)
+        fell_back = (code3 == 0 and "from bundled" in seen3 and os.path.exists(fail_log)
+                     and bool(glob.glob(UPD + ".broken-*")) and not os.path.exists(UPD))
+        print(f"   fell back to the built-in code: {fell_back}")
+        ok = ok and fell_back
+    shutil.rmtree(UPD, ignore_errors=True)
+    for d in glob.glob(UPD + ".broken-*"):
+        shutil.rmtree(d, ignore_errors=True)
+else:
+    print("-- loader fallback: this package has the old loader; skipped")
+print("bundled code ok: %s; update: exit code %s after %.0f s, update code used: %s" % (
+    bundled_ok, code, time.time() - t0, staged_used))
 print("EXE CHECKS OK" if ok else "EXE CHECKS FAILED")
 sys.exit(0 if ok else 1)

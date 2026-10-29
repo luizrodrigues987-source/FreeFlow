@@ -18,7 +18,7 @@ import zipfile
 from dataclasses import dataclass
 from typing import Optional
 
-from . import APP_VERSION, CODE_REVISION
+from . import APP_VERSION, CODE_REVISION, signing
 from .config import DATA_DIR
 
 log = logging.getLogger(__name__)
@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 DEFAULT_UPDATE_URL = "https://github.com/luizrodrigues987-source/FreeFlow/releases/latest/download/FreeFlow-update-latest.zip"
 DEFAULT_RELEASE_PAGE = "https://github.com/luizrodrigues987-source/FreeFlow/releases/latest"
 UPDATE_DIR = os.path.join(DATA_DIR, "update")
+# the publisher's Ed25519 public key: an update is installed only with a valid signature for it (see
+# signing.py; the private key is on the publisher's PC, build_update.py signs every zip)
+UPDATE_PUBLIC_KEY = "6ca1fcd1288f24667a4c26fede257e930107250d192345c8155834a28e36c4d1"
 
 
 @dataclass
@@ -127,7 +130,16 @@ def apply_from_zip(data: bytes, update_dir: str = None, force: bool = False,
         return UpdateResult("current", f"Update r{rev} did not start on this PC before; waiting for a newer one",
                             local_revision(update_dir), ver, page_url)
     with zipfile.ZipFile(io.BytesIO(data)) as z:
+        files = {n: z.read(n) for n in signing.installable(z.namelist())}
+        try:
+            sig = bytes.fromhex(z.read("SIGNATURE").decode("ascii").strip())
+        except (KeyError, ValueError, UnicodeDecodeError):
+            sig = b""
         problem = preflight(z)
+    if not signing.verify(bytes.fromhex(UPDATE_PUBLIC_KEY), signing.manifest(files), sig):
+        log.error("Update r%d rejected: %s", rev, "no valid signature" if sig else "not signed")
+        return UpdateResult("error", f"Update r{rev} is not signed by FreeFlow's publisher; not installed",
+                            page_url=page_url)
     if problem:
         log.error("Update r%d rejected: %s", rev, problem)
         return UpdateResult("error", f"Update r{rev} is damaged ({problem}); not installed", page_url=page_url)
@@ -139,11 +151,9 @@ def apply_from_zip(data: bytes, update_dir: str = None, force: bool = False,
     for d in (tmp, old):
         shutil.rmtree(d, ignore_errors=True)
     os.makedirs(os.path.join(tmp, "freeflow"))
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
-        for name in z.namelist():
-            if name.startswith("freeflow/") and name.endswith(".py") and "/" not in name[len("freeflow/"):]:
-                with open(os.path.join(tmp, name.replace("/", os.sep)), "wb") as f:
-                    f.write(z.read(name))
+    for name, content in files.items():               # exactly the files the signature covers
+        with open(os.path.join(tmp, name.replace("/", os.sep)), "wb") as f:
+            f.write(content)
     if os.path.isdir(update_dir):
         os.rename(update_dir, old)
     os.rename(tmp, update_dir)

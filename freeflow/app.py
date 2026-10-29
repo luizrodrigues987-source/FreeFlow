@@ -36,9 +36,14 @@ from .editwatch import EditWatcher
 from . import context as wincontext
 from .postprocess import capitalize_first
 from .llm import (LocalLLM, PolishError, PolishSlow, PolishUnreachable, describe_app, polish, resolve_mode,
-                  too_short_to_polish)
-from .postprocess import clean_transcript, finalize_for_injection, normalize_spaces
+                  style_for, too_short_to_polish)
+from .postprocess import clean_transcript, finalize_for_injection, is_scratch_command, normalize_spaces
 from .recorder import SAMPLE_RATE, Recorder, save_wav
+# the UI modules are imported here, not when first used: the packaged FreeFlow's loader falls back to its
+# built-in code only when importing this module fails, so an update must fail HERE if one of them would
+from .overlay import Overlay
+from .settings_ui import SettingsWindow
+from .tray import Tray, ensure_icon_file
 from .transcribe import EngineError, create_engine, engine_signature
 from .util import acquire_single_instance, foreground_window_info, message_box, setup_logging, window_info
 
@@ -130,8 +135,6 @@ class App:
         log.info("%s %s starting (python %s, code r%s from %s)", APP_NAME, APP_VERSION, sys.version.split()[0],
                  getattr(_pkg, "CODE_REVISION", 0), origin)
 
-        from .overlay import Overlay
-        from .tray import Tray, ensure_icon_file
 
         _set_dpi_awareness()
         previous_fg = focus.user32.GetForegroundWindow()
@@ -932,6 +935,9 @@ class App:
             return
         log.info("Raw transcript (%.2fs): %r", time.time() - t0, raw[:200])
         text = clean_transcript(raw, self.cfg, job.rms, job.duration, details.get("no_speech"))
+        if text and is_scratch_command(text):
+            self._scratch_last(job)                        # "scratch that": take the last dictation back
+            return
         undo_last = None
         correction = split_correction(text) if (text and learning) else None
         if correction is not None:
@@ -963,7 +969,9 @@ class App:
                 self.ui(self.overlay.show, "transcribing", "Polishing…")
             t1 = time.time()
             try:
-                polished = normalize_spaces(polish(text, self.cfg, app_context, mode=mode, local_llm=self.local_llm))
+                style = style_for(self.cfg, job.app_exe, job.app_title)
+                polished = normalize_spaces(polish(text, self.cfg, app_context, mode=mode, local_llm=self.local_llm,
+                                                   style=style))
                 if polished:
                     text = polished
                 log.info("Structured with %s in %.2fs: %r", mode, time.time() - t1, text[:120])
@@ -1149,6 +1157,49 @@ class App:
             undo = last
         return corrected, undo, True
 
+    def _scratch_last(self, job: Job):
+        """Spoken "scratch that" on its own: remove the last dictation (undo), learn nothing."""
+        last = self._last_dictation
+        if last and self._can_undo(last, job) and self._keys_released():
+            self.editwatch.stop()
+            self._undo_insertion(last)
+            self._last_dictation = None
+            log.info("Scratch that: took back %r", last["text"][:60])
+            if self.cfg.get("overlay", True):
+                self.ui(self.overlay.show, "done", "Removed the last dictation", 1200)
+            return
+        if not last:
+            why = "there is no dictation to take back"
+        elif last.get("game"):
+            why = "game chat cannot be taken back"
+        elif time.time() - last["time"] >= 180:
+            why = "the last dictation is more than three minutes old"
+        elif self.hotkeys.presses != last["presses"]:
+            why = "you typed since the last dictation"
+        else:
+            why = "the last dictation went to another window"
+        log.info("Scratch that: nothing taken back (%s)", why)
+        if self.cfg.get("overlay", True):
+            self.ui(self.overlay.show, "info", "Nothing taken back: " + why, 2500)
+
+    def copy_last_dictation(self):
+        """Tray menu: put the last dictation on the clipboard again (it went to the wrong place, or the
+        paste did not arrive)."""
+        text = (self._last_dictation or {}).get("text") or ""
+        if not text:
+            try:
+                entries = self.history.entries(limit=1)
+                text = entries[0].get("text", "") if entries else ""
+            except Exception:
+                text = ""
+        if not text:
+            self.ui(self.tray.notify, "There is no dictation to copy yet.", "FreeFlow")
+            return
+        from .inject import clipboard_set_text
+        if clipboard_set_text(text):
+            preview = text if len(text) <= 80 else text[:77] + "..."
+            self.ui(self.tray.notify, f"Copied - paste it with Ctrl+V: {preview}", "FreeFlow")
+
     def _can_undo(self, last: dict, job: Job) -> bool:
         """The last insertion can be taken back when it is recent, went to the same window, was not a
         game chat message, and the user has not typed anything since."""
@@ -1236,7 +1287,6 @@ class App:
         self.tray.refresh_title()
 
     def open_settings(self, tab: Optional[str] = None):
-        from .settings_ui import SettingsWindow
         if self.settings_win is not None and self.settings_win.winfo_exists():
             self.settings_win.deiconify()
             self.settings_win.lift()

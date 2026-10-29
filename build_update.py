@@ -5,7 +5,13 @@ the freeflow/*.py code, "Update FreeFlow.bat" and a short read-me.  The recipien
 double-clicks the .bat: the code is copied to %APPDATA%\\FreeFlow\\update and FreeFlow restarts.
 FreeFlow.exe uses that copy whenever its revision is newer than the bundled code.
 
+Every zip is signed (freeflow/signing.py) with the publisher's private key, which never leaves this PC:
+%USERPROFILE%\\.freeflow\\update-signing.key (or FREEFLOW_SIGNING_KEY).  FreeFlow installs an update only
+when the signature matches the public key in freeflow/updater.py.  KEEP A BACKUP OF THAT FILE: without it,
+installed copies accept no further code updates (only a new full package would help).
+
 Run with the project's venv:  .venv\\Scripts\\python.exe build_update.py
+Once, to create the key:      .venv\\Scripts\\python.exe build_update.py --new-key
 """
 from __future__ import annotations
 
@@ -19,6 +25,8 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 INIT = os.path.join(ROOT, "freeflow", "__init__.py")
+KEY_PATH = os.environ.get("FREEFLOW_SIGNING_KEY") or os.path.join(os.path.expanduser("~"), ".freeflow",
+                                                                   "update-signing.key")
 
 UPDATER_BAT = r'''@echo off
 setlocal
@@ -105,19 +113,56 @@ def stamp_revision() -> int:
     return rev
 
 
+def new_key():
+    """Create the signing key (once).  Prints the public key that belongs into freeflow/updater.py."""
+    import secrets
+    sys.path.insert(0, ROOT)
+    from freeflow import signing
+    if os.path.exists(KEY_PATH):
+        sys.exit(f"{KEY_PATH} exists already; refusing to overwrite it")
+    os.makedirs(os.path.dirname(KEY_PATH), exist_ok=True)
+    secret = secrets.token_bytes(32)
+    with open(KEY_PATH, "w", encoding="ascii") as f:
+        f.write(secret.hex() + "\n")
+    print("signing key written to", KEY_PATH, "- back it up somewhere safe")
+    print("UPDATE_PUBLIC_KEY =", signing.public_key(secret).hex())
+
+
+def load_key() -> bytes:
+    sys.path.insert(0, ROOT)
+    from freeflow import signing, updater
+    try:
+        secret = bytes.fromhex(open(KEY_PATH, encoding="ascii").read().strip())
+    except FileNotFoundError:
+        sys.exit(f"No signing key at {KEY_PATH}. Restore it from your backup (installed copies only accept "
+                 "updates signed with it), or run with --new-key for a brand-new set-up.")
+    if signing.public_key(secret).hex() != updater.UPDATE_PUBLIC_KEY:
+        sys.exit(f"The key at {KEY_PATH} does not match UPDATE_PUBLIC_KEY in freeflow/updater.py: "
+                 "installed copies would refuse this update. Not building.")
+    return secret
+
+
 def build_update() -> str:
+    secret = load_key()                  # before anything is stamped: no key, no update
     rev = stamp_revision()
     sys.path.insert(0, ROOT)
     import importlib
     import freeflow
     importlib.reload(freeflow)
+    from freeflow import signing
     ver = freeflow.APP_VERSION
     out_dir = os.path.join(ROOT, "dist")
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f"FreeFlow-update-r{rev}.zip")
+    files = {}
+    for py in sorted(glob.glob(os.path.join(ROOT, "freeflow", "*.py"))):
+        with open(py, "rb") as f:
+            files["freeflow/" + os.path.basename(py)] = f.read()
+    signature = signing.sign(secret, signing.manifest(files))
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for py in sorted(glob.glob(os.path.join(ROOT, "freeflow", "*.py"))):
-            z.write(py, "freeflow/" + os.path.basename(py))
+        for name, data in files.items():
+            z.writestr(name, data)
+        z.writestr("SIGNATURE", signature.hex() + "\n")
         z.writestr("Update FreeFlow.bat", UPDATER_BAT.replace("\n", "\r\n"))
         z.writestr("README-update.txt", README_UPDATE.format(rev=rev, ver=ver).replace("\n", "\r\n"))
     size = os.path.getsize(out)
@@ -130,4 +175,7 @@ def build_update() -> str:
 
 
 if __name__ == "__main__":
-    build_update()
+    if "--new-key" in sys.argv:
+        new_key()
+    else:
+        build_update()

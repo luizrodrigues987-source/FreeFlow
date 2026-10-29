@@ -56,6 +56,7 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings…", self._settings, default=True),
             pystray.MenuItem("History…", self._history),
+            pystray.MenuItem("Copy last dictation", self._copy_last),
             pystray.MenuItem("Check for updates…", self._check_updates),
             pystray.MenuItem("Open data folder", self._open_folder),
             pystray.Menu.SEPARATOR,
@@ -74,6 +75,9 @@ class Tray:
 
     def _history(self, icon, item):
         self.app.ui(self.app.open_settings, "History")
+
+    def _copy_last(self, icon, item):
+        threading.Thread(target=self.app.copy_last_dictation, name="copy-last", daemon=True).start()
 
     def _open_folder(self, icon, item):
         self.app.open_data_folder()

@@ -85,7 +85,9 @@ DEFAULTS: dict = {
     "capitalize_first": True,
     "replacements": {},              # spoken phrase -> replacement text
     "polish": "auto",                # auto (local when available) | off | local | claude | openai
-    "polish_style": "clean",         # clean | formal | casual
+    "polish_style": "clean",         # clean | formal | casual | light
+    # style per kind of app ("" = polish_style): chat messages casual, e-mails formal, AI prompts untouched
+    "polish_style_per_app": {"chat": "casual", "email": "formal", "ai": "light", "document": ""},
     "ollama_url": "http://127.0.0.1:11434",   # 127.0.0.1, not localhost: IPv6 fallback costs 2 s per request
     "ollama_model": "qwen2.5:3b",
     "llm_keep_loaded": True,         # the text model stays in memory (about 2.5 GB); a reload costs 5-20 s

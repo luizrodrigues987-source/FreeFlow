@@ -41,6 +41,13 @@ Getting started
    every dictation is quick (about 2.5 GB of video memory; Settings > Formatting switches that off).
 5. Settings > General > "Start FreeFlow when I sign in" keeps it running in the background all the time.
 
+Handy while dictating
+- Say "scratch that" on its own to take back the last dictation.
+- Misheard a word? Dictate "correction" and the right word(s) right after, e.g. "correction: enforced".
+- The text went to the wrong place? Tray icon > "Copy last dictation", then Ctrl+V where you want it.
+- Chat messages come out casual, e-mails polished, prompts to AI assistants nearly untouched; change that
+  under Settings > Formatting > "Style per kind of app".
+
 In games such as League of Legends, FreeFlow opens the chat for you (Enter), inserts the text and leaves you to
 press Enter to send (Settings > Formatting > "Game chat").
 
@@ -59,8 +66,9 @@ Everything runs on your own PC. Nothing is sent anywhere unless you deliberately
 Updates
 FreeFlow checks GitHub for a newer version when it starts and every morning at 5:00 while running, and
 installs it by itself; the restart that installs it waits until you are not dictating, typing or gaming
-(change the time or switch this off in Settings > About). You can also double-click "Update FreeFlow.bat" in this folder, or use the tray
-icon's "Check for updates". Updates are small (about 100 KB); a new major version is announced with a link.
+(change the time or switch this off in Settings > About). You can also double-click "Update FreeFlow.bat" in this
+folder, or use the tray icon's "Check for updates". Updates are small (about 150 KB) and digitally signed:
+FreeFlow installs only code signed by its publisher. A new major version is announced with a link.
 
 Notes
 - Windows SmartScreen or an antivirus may warn about an unsigned app the first time; choose "Run anyway".
